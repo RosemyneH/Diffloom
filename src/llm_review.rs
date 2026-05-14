@@ -1,4 +1,4 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -76,18 +76,29 @@ struct OllamaGenerateResponse {
 }
 
 pub fn run_review(cfg: &LlmReviewConfig, path: &str, unified_diff: &str) -> anyhow::Result<String> {
+    use ureq::Agent;
+
     let prompt = build_review_prompt(path, unified_diff);
     let payload = serde_json::json!({
         "model": cfg.model,
         "prompt": prompt,
         "stream": false,
     });
-    let resp = ureq::post(&cfg.url)
-        .timeout(std::time::Duration::from_secs(180))
-        .send_json(payload)
+    let config = Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(180)))
+        .build();
+    let agent = Agent::new_with_config(config);
+    let mut response = agent
+        .post(&cfg.url)
+        .send_json(&payload)
+        .map_err(|e| anyhow::anyhow!(e))
         .with_context(|| format!("POST {}", cfg.url))?;
-    let status = resp.status();
-    let text = resp.into_string().unwrap_or_default();
+    let status = response.status().as_u16();
+    let text = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| anyhow::anyhow!(e))
+        .context("read response body")?;
     if !(200..300).contains(&status) {
         anyhow::bail!("HTTP {status}: {text}");
     }

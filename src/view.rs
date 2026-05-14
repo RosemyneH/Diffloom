@@ -143,8 +143,6 @@ pub enum SbsRow {
 pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
     let stats = count_line_changes(old, new);
     let diff = TextDiff::from_lines(old, new);
-    let old_slices = diff.old_slices();
-    let new_slices = diff.new_slices();
     let mut rows = Vec::new();
     let mut old_ln = 1usize;
     let mut new_ln = 1usize;
@@ -159,8 +157,8 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
                     rows.push(SbsRow::Equal {
                         old_ln: old_ln + i,
                         new_ln: new_ln + i,
-                        left: old_slices[old_index + i].to_string(),
-                        right: new_slices[new_index + i].to_string(),
+                        left: diff.old_slice(old_index + i).expect("old").to_string(),
+                        right: diff.new_slice(new_index + i).expect("new").to_string(),
                     });
                 }
                 old_ln += len;
@@ -172,7 +170,7 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
                 for i in 0..old_len {
                     rows.push(SbsRow::DeleteLine {
                         old_ln: old_ln + i,
-                        text: old_slices[old_index + i].to_string(),
+                        text: diff.old_slice(old_index + i).expect("old").to_string(),
                     });
                 }
                 old_ln += old_len;
@@ -183,7 +181,7 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
                 for i in 0..new_len {
                     rows.push(SbsRow::InsertLine {
                         new_ln: new_ln + i,
-                        text: new_slices[new_index + i].to_string(),
+                        text: diff.new_slice(new_index + i).expect("new").to_string(),
                     });
                 }
                 new_ln += new_len;
@@ -199,20 +197,20 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
                     rows.push(SbsRow::Both {
                         old_ln: old_ln + i,
                         new_ln: new_ln + i,
-                        left: old_slices[old_index + i].to_string(),
-                        right: new_slices[new_index + i].to_string(),
+                        left: diff.old_slice(old_index + i).expect("old").to_string(),
+                        right: diff.new_slice(new_index + i).expect("new").to_string(),
                     });
                 }
                 for i in m..old_len {
                     rows.push(SbsRow::DeleteLine {
                         old_ln: old_ln + i,
-                        text: old_slices[old_index + i].to_string(),
+                        text: diff.old_slice(old_index + i).expect("old").to_string(),
                     });
                 }
                 for i in m..new_len {
                     rows.push(SbsRow::InsertLine {
                         new_ln: new_ln + i,
-                        text: new_slices[new_index + i].to_string(),
+                        text: diff.new_slice(new_index + i).expect("new").to_string(),
                     });
                 }
                 old_ln += old_len;
