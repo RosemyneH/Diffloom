@@ -36,13 +36,13 @@ const STATUS_BG: egui::Color32 = egui::Color32::from_rgb(16, 17, 22);
 const DIFF_CONTEXT_LINES: usize = 3;
 const GUTTER_W: f32 = 34.0;
 const STRIP_W: f32 = 3.0;
-const CODE_PAD_X: i8 = 4;
-const CODE_PAD_Y: i8 = 2;
-const DIFF_COL_GAP: f32 = 4.0;
+const CODE_PAD_X: i8 = 3;
+const CODE_PAD_Y: i8 = 1;
+const DIFF_COL_GAP: f32 = 2.0;
 const ICON_COL_W: f32 = 22.0;
-const DIFF_ROW_H: f32 = 16.0;
-const CODE_FONT: f32 = 11.5;
-const GUTTER_FONT: f32 = 10.0;
+const DIFF_ROW_H: f32 = 14.0;
+const CODE_FONT: f32 = 11.0;
+const GUTTER_FONT: f32 = 9.5;
 const SIDEBAR_W: f32 = 272.0;
 
 type PathWithStats = (db::PathHistoryRow, view::DiffLineStats);
@@ -524,59 +524,70 @@ impl DiffloomGui {
         fg: egui::Color32,
         sign: Option<&'static str>,
     ) {
+        let strip_w = if strip == egui::Color32::TRANSPARENT {
+            0.0
+        } else {
+            STRIP_W
+        };
+        let code_w = (width - strip_w - GUTTER_W).max(1.0);
+        let ln = line_no
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| " ".to_string());
+        let gutter_rt = if let Some(s) = sign {
+            egui::RichText::new(format!("{s} {ln}"))
+                .family(egui::FontFamily::Monospace)
+                .size(GUTTER_FONT)
+                .color(fg)
+        } else {
+            egui::RichText::new(&ln)
+                .family(egui::FontFamily::Monospace)
+                .size(GUTTER_FONT)
+                .color(TEXT_DIM)
+        };
+        let code_rt = egui::RichText::new(text)
+            .family(egui::FontFamily::Monospace)
+            .size(CODE_FONT)
+            .color(fg);
+
         egui::Frame::new()
             .fill(row_fill)
             .inner_margin(egui::Margin::ZERO)
             .show(ui, |ui| {
                 ui.set_width(width);
-                ui.horizontal(|ui| {
+                ui.set_height(row_h);
+                ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                    if let Some(s) = sign {
-                        let _ = s;
-                        if strip != egui::Color32::TRANSPARENT {
-                            egui::Frame::new().fill(strip).show(ui, |ui| {
-                                ui.set_width(STRIP_W);
-                                ui.set_min_height(row_h);
+                    if strip_w > 0.0 {
+                        egui::Frame::new()
+                            .fill(strip)
+                            .inner_margin(egui::Margin::ZERO)
+                            .show(ui, |ui| {
+                                ui.set_width(strip_w);
+                                ui.set_height(row_h);
                             });
-                        }
-                    } else if strip != egui::Color32::TRANSPARENT {
-                        egui::Frame::new().fill(strip).show(ui, |ui| {
-                            ui.set_width(STRIP_W);
-                            ui.set_min_height(row_h);
-                        });
                     }
                     egui::Frame::new()
                         .fill(gutter_fill)
-                        .inner_margin(egui::Margin::symmetric(3, CODE_PAD_Y))
+                        .inner_margin(egui::Margin::symmetric(2, CODE_PAD_Y))
                         .show(ui, |ui| {
-                            ui.set_width(GUTTER_W);
-                            ui.set_min_height(row_h);
-                            let ln = line_no
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| " ".to_string());
-                            let rt = if let Some(s) = sign {
-                                egui::RichText::new(format!("{s} {ln}"))
-                                    .family(egui::FontFamily::Monospace)
-                                    .size(GUTTER_FONT)
-                                    .color(fg)
-                            } else {
-                                egui::RichText::new(&ln)
-                                    .family(egui::FontFamily::Monospace)
-                                    .size(GUTTER_FONT)
-                                    .color(TEXT_DIM)
-                            };
-                            ui.label(rt);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(GUTTER_W, row_h),
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(gutter_rt);
+                                },
+                            );
                         });
                     egui::Frame::new()
                         .fill(row_fill)
                         .inner_margin(egui::Margin::symmetric(CODE_PAD_X, CODE_PAD_Y))
                         .show(ui, |ui| {
-                            ui.set_min_height(row_h);
-                            ui.label(
-                                egui::RichText::new(text)
-                                    .family(egui::FontFamily::Monospace)
-                                    .size(CODE_FONT)
-                                    .color(fg),
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(code_w, row_h),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.label(code_rt);
+                                },
                             );
                         });
                 });
@@ -611,8 +622,10 @@ impl DiffloomGui {
 
     fn paint_insert_only_rows(ui: &mut egui::Ui, rows: &[view::SbsRow]) {
         let row_h = DIFF_ROW_H;
+        ui.spacing_mut().item_spacing.y = 0.0;
         for (idx, row) in rows.iter().enumerate() {
             ui.push_id(("ins", idx), |ui| {
+                ui.set_height(row_h);
                 match row {
                     view::SbsRow::Equal {
                         new_ln,
@@ -649,9 +662,10 @@ impl DiffloomGui {
                         let w = ui.available_width();
                         egui::Frame::new()
                             .fill(HUNK_BAR)
-                            .inner_margin(egui::Margin::symmetric(6, 4))
+                            .inner_margin(egui::Margin::symmetric(4, 2))
                             .show(ui, |ui| {
                                 ui.set_width(w);
+                                ui.set_height(row_h);
                                 ui.vertical_centered(|ui| {
                                     ui.label(
                                         egui::RichText::new(format!(
@@ -675,16 +689,18 @@ impl DiffloomGui {
             .fill(CENTER_BG)
             .show(ui, |ui| {
                 ui.set_width(width);
-                ui.set_min_height(row_h);
+                ui.set_height(row_h);
             });
     }
 
     fn paint_sbs_rows(ui: &mut egui::Ui, rows: &[view::SbsRow]) {
         let row_h = DIFF_ROW_H;
         let half = (ui.available_width() - DIFF_COL_GAP) * 0.5;
+        ui.spacing_mut().item_spacing.y = 0.0;
         for (idx, row) in rows.iter().enumerate() {
             ui.push_id(("sbs", idx), |ui| {
-                ui.horizontal(|ui| {
+                ui.set_height(row_h);
+                ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     match row {
                         view::SbsRow::Equal {
@@ -784,9 +800,10 @@ impl DiffloomGui {
                             let w = half * 2.0 + DIFF_COL_GAP;
                             egui::Frame::new()
                                 .fill(HUNK_BAR)
-                                .inner_margin(egui::Margin::symmetric(6, 4))
+                                .inner_margin(egui::Margin::symmetric(4, 2))
                                 .show(ui, |ui| {
                                     ui.set_width(w);
+                                    ui.set_height(row_h);
                                     ui.vertical_centered(|ui| {
                                         ui.label(
                                             egui::RichText::new(format!(
@@ -874,6 +891,7 @@ impl DiffloomGui {
                             .max_height(diff_h)
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
                                 if self.sbs_rows.is_empty() {
                                     ui.label(
                                         egui::RichText::new(&self.diff_cache_text)
