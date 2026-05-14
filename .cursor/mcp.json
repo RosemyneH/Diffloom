@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "diffloom": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.cursor/mcp-diffloom.sh",
+      "args": []
+    }
+  }
+}

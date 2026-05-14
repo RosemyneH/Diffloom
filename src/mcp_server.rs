@@ -33,6 +33,30 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn resolve_workspace_path(raw: &str) -> Result<PathBuf, String> {
+    let mut p = PathBuf::from(raw.trim());
+    if !p.is_absolute() {
+        let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+        p = cwd.join(p);
+    }
+    crate::paths::normalize_path(&p).map_err(|e| format!("{e}"))
+}
+
+fn apply_open_workspace(srv: &DiffloomMcp, raw: &str) -> String {
+    let p = match resolve_workspace_path(raw) {
+        Ok(p) => p,
+        Err(e) => return format!("error: {e}"),
+    };
+    let conn = match db::open_db(&p) {
+        Ok(c) => c,
+        Err(e) => return format!("error: {e:#}"),
+    };
+    let mut g = srv.inner.lock().unwrap();
+    g.root = Some(p.clone());
+    g.conn = Some(conn);
+    format!("opened workspace {}", p.display())
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct OpenWorkspaceParams {
     #[schemars(description = "Workspace root (absolute or relative to cwd)")]
@@ -81,25 +105,7 @@ impl DiffloomMcp {
         &self,
         Parameters(OpenWorkspaceParams { root }): Parameters<OpenWorkspaceParams>,
     ) -> String {
-        let mut p = PathBuf::from(root.trim());
-        if !p.is_absolute() {
-            match std::env::current_dir() {
-                Ok(cwd) => p = cwd.join(p),
-                Err(e) => return format!("error: cwd: {e}"),
-            }
-        }
-        let p = match crate::paths::normalize_path(&p) {
-            Ok(x) => x,
-            Err(e) => return format!("error: {e}"),
-        };
-        let conn = match db::open_db(&p) {
-            Ok(c) => c,
-            Err(e) => return format!("error: {e:#}"),
-        };
-        let mut g = self.inner.lock().unwrap();
-        g.root = Some(p.clone());
-        g.conn = Some(conn);
-        format!("opened workspace {}", p.display())
+        apply_open_workspace(self, &root)
     }
 
     #[tool(description = "Create a session and set it as active for subsequent file snapshots")]
@@ -314,6 +320,17 @@ impl DiffloomMcp {
 
 pub async fn run_stdio() -> anyhow::Result<()> {
     let srv = DiffloomMcp::default();
+    if let Ok(raw) = std::env::var("DIFFLOOM_AUTO_WORKSPACE") {
+        let s = raw.trim();
+        if !s.is_empty() {
+            let out = apply_open_workspace(&srv, s);
+            if out.starts_with("error") {
+                tracing::warn!("diffloom mcp auto-workspace: {out}");
+            } else {
+                tracing::info!("diffloom mcp auto-workspace: {out}");
+            }
+        }
+    }
     let transport = rmcp::transport::io::stdio();
     let running = srv.serve(transport).await?;
     running.waiting().await?;
