@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router, ServiceExt};
 use serde::Deserialize;
 
-use crate::db;
+use crate::{db, view};
 
 #[derive(Default)]
 struct McpInner {
@@ -219,51 +219,10 @@ impl DiffloomMcp {
         let Some(conn) = g.conn.as_ref() else {
             return "error: call open_workspace first".into();
         };
-        let path_opt = match db::snapshot_path(conn, snapshot_id) {
-            Ok(p) => p,
-            Err(e) => return format!("error: {e}"),
-        };
-        let Some(path) = path_opt else {
-            return "error: snapshot not found".into();
-        };
-        let prev = match db::previous_snapshot_id(conn, &path, snapshot_id) {
-            Ok(p) => p,
-            Err(e) => return format!("error: {e}"),
-        };
-        let Some(pid) = prev else {
-            return "no previous snapshot for this path".into();
-        };
-        let cur = match db::snapshot_body(conn, snapshot_id) {
-            Ok(b) => b,
-            Err(e) => return format!("error: {e}"),
-        };
-        let Some(cur) = cur else {
-            return "missing stored body for current snapshot".into();
-        };
-        let old = match db::snapshot_body(conn, pid) {
-            Ok(b) => b,
-            Err(e) => return format!("error: {e}"),
-        };
-        let Some(old) = old else {
-            return "missing stored body for previous snapshot".into();
-        };
-        let old_s = String::from_utf8_lossy(&old);
-        let new_s = String::from_utf8_lossy(&cur);
-        let diff = similar::TextDiff::from_lines(&*old_s, &*new_s);
-        let mut out = String::new();
-        for change in diff.iter_all_changes() {
-            let sign = match change.tag() {
-                similar::ChangeTag::Delete => "-",
-                similar::ChangeTag::Insert => "+",
-                similar::ChangeTag::Equal => " ",
-            };
-            for line in change.value().lines() {
-                out.push_str(sign);
-                out.push_str(line);
-                out.push('\n');
-            }
+        match view::unified_diff_for_snapshot(conn, snapshot_id) {
+            Ok(s) => s,
+            Err(e) => format!("error: {e:#}"),
         }
-        out
     }
 
     #[tool(description = "Symbol change rows for a snapshot")]
