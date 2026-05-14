@@ -271,7 +271,6 @@ pub fn list_paths_by_scope(
                 "SELECT path, MAX(id) AS lid, COUNT(*) AS n
                  FROM snapshots
                  GROUP BY path
-                 HAVING n >= 2
                  ORDER BY lid DESC
                  LIMIT ?1",
             )?;

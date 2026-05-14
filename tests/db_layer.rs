@@ -276,7 +276,7 @@ fn list_commit_groups_dedupes_by_commit() {
 }
 
 #[test]
-fn list_paths_by_scope_requires_two_snapshots_when_all_sessions() {
+fn list_paths_by_scope_all_sessions_lists_single_snapshot_paths() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
@@ -294,7 +294,9 @@ fn list_paths_by_scope_requires_two_snapshots_when_all_sessions() {
     )
     .unwrap();
     let paths = db::list_paths_by_scope(&conn, None, 20).unwrap();
-    assert!(paths.is_empty(), "single snapshot path should not list globally");
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].path, "only.rs");
+    assert_eq!(paths[0].snapshot_count, 1);
 
     conn.execute(
         "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
