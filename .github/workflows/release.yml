@@ -29,7 +29,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux system dependencies (GUI / winit)
         if: runner.os == 'Linux'
@@ -67,14 +67,14 @@ jobs:
 
       - name: Upload artifact (Unix)
         if: runner.os != 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: diffloom-${{ matrix.suffix }}
           path: diffloom-${{ matrix.suffix }}.tar.gz
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: diffloom-${{ matrix.suffix }}
           path: diffloom-${{ matrix.suffix }}.zip
@@ -83,9 +83,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: release-assets
           merge-multiple: true
