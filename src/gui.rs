@@ -8,7 +8,7 @@ use eframe::egui;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::Debouncer;
 
-use crate::{db, git_info, ingest, paths, view, watcher};
+use crate::{app_state, db, git_info, ingest, paths, view, watcher};
 
 const CANVAS: egui::Color32 = egui::Color32::from_rgb(11, 12, 16);
 const TOPBAR: egui::Color32 = egui::Color32::from_rgb(18, 19, 26);
@@ -80,6 +80,7 @@ struct DiffloomGui {
     rail_collapsed: bool,
     rail_force_expanded: bool,
     read_paths: HashSet<String>,
+    workspace_err: Option<String>,
 }
 
 fn project_label(root: &std::path::Path) -> String {
@@ -112,8 +113,8 @@ fn file_glyph(path: &str) -> &'static str {
 
 impl DiffloomGui {
     fn scoped_paths_matching_filters(&self) -> Vec<db::PathHistoryRow> {
-        let mut rows = db::list_paths_by_scope(&self.conn, self.session_filter, 150)
-            .unwrap_or_default();
+        let mut rows =
+            db::list_paths_by_scope(&self.conn, self.session_filter, 150).unwrap_or_default();
         let q = self.search.trim().to_lowercase();
         if !q.is_empty() {
             rows.retain(|r| r.path.to_lowercase().contains(&q));
@@ -216,7 +217,9 @@ impl DiffloomGui {
     fn totals_footer(&self) -> (u32, u32) {
         self.paths_with_stats
             .iter()
-            .fold((0u32, 0u32), |(a, d), (_, s)| (a + s.insertions, d + s.deletions))
+            .fold((0u32, 0u32), |(a, d), (_, s)| {
+                (a + s.insertions, d + s.deletions)
+            })
     }
 
     fn update_rail_for_viewport(&mut self, viewport_w: f32) {
@@ -238,83 +241,155 @@ impl DiffloomGui {
         }
     }
 
+    fn reset_browser_state(&mut self) {
+        self.path_sel = 0;
+        self.path_versions_path = None;
+        self.path_snaps.clear();
+        self.snap_stats.clear();
+        self.snap_sel = 0;
+        self.session_filter = None;
+        self.search.clear();
+        self.bottom_tab = 0;
+        self.diff_cache_id = None;
+        self.diff_cache_text.clear();
+        self.sbs_rows.clear();
+        self.sbs_stats = view::DiffLineStats::default();
+        self.diff_row_sel = None;
+        self.paths_scan_key.clear();
+        self.rail_collapsed = false;
+        self.rail_force_expanded = false;
+    }
+
+    fn switch_workspace(&mut self, new_root: PathBuf) -> anyhow::Result<()> {
+        let root = paths::normalize_path(&new_root).context("workspace path")?;
+        if root == self.root {
+            return Ok(());
+        }
+        let conn = db::open_db(&root)?;
+        let (debouncer, file_rx) =
+            watcher::watch_workspace(root.clone(), Duration::from_millis(400))?;
+        self.conn = conn;
+        self.root = root;
+        self.file_rx = file_rx;
+        self._debouncer = debouncer;
+        self.read_paths = db::read_paths_load(&self.conn).unwrap_or_default();
+        self.reset_browser_state();
+        self.workspace_err = None;
+        app_state::save_last_workspace(&self.root).context("persist workspace")?;
+        Ok(())
+    }
+
+    fn pick_workspace(&mut self, ctx: &egui::Context) {
+        let Some(picked) = rfd::FileDialog::new()
+            .set_title("Diffloom — choose workspace folder")
+            .pick_folder()
+        else {
+            return;
+        };
+        if let Err(e) = self.switch_workspace(picked) {
+            self.workspace_err = Some(format!("Could not open workspace: {e:#}"));
+        } else {
+            let title = format!("Diffloom — {}", project_label(&self.root));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
+        }
+    }
+
     fn top_bar(&mut self, ui: &mut egui::Ui, viewport_w: f32) {
-        let branch = git_info::current_branch(&self.root)
-            .unwrap_or_else(|| "detached".to_string());
+        let branch = git_info::current_branch(&self.root).unwrap_or_else(|| "detached".to_string());
         let proj = project_label(&self.root);
         egui::Frame::new()
             .fill(TOPBAR)
             .inner_margin(egui::Margin::symmetric(10, 6))
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
             .show(ui, |ui| {
-                let full = ui.available_width();
-                let left_w = 190.0_f32;
-                let mid = (full - left_w - 16.0).max(120.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new(if self.rail_collapsed {
-                                "▶"
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    let full = ui.available_width();
+                    let left_w = 288.0_f32;
+                    let mid = (full - left_w - 16.0).max(120.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(if self.rail_collapsed {
+                                    "▶"
+                                } else {
+                                    "◀"
+                                }))
+                                .min_size(egui::vec2(28.0, ui.spacing().interact_size.y)),
+                            )
+                            .on_hover_text(if self.rail_collapsed {
+                                "Show file and version list"
                             } else {
-                                "◀"
-                            }))
-                            .min_size(egui::vec2(28.0, ui.spacing().interact_size.y)),
-                        )
-                        .on_hover_text(if self.rail_collapsed {
-                            "Show file and version list"
-                        } else {
-                            "Hide sidebar (more space for diff)"
-                        })
-                        .clicked()
-                    {
-                        self.rail_set_expanded(self.rail_collapsed, viewport_w);
-                    }
-                    ui.add_space(4.0);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(left_w, ui.spacing().interact_size.y),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.label(
-                                egui::RichText::new("Diffloom")
-                                    .size(17.0)
-                                    .strong()
-                                    .color(TEXT),
-                            );
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(proj)
-                                    .size(12.0)
-                                    .color(ACCENT),
-                            );
-                            ui.label(
-                                egui::RichText::new(format!("· {branch}"))
-                                    .size(11.0)
-                                    .family(egui::FontFamily::Monospace)
-                                    .color(TEXT_DIM),
-                            );
-                        },
-                    );
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(mid, ui.spacing().interact_size.y),
-                        egui::Layout::top_down(egui::Align::Center),
-                        |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 6.0;
+                                "Hide sidebar (more space for diff)"
+                            })
+                            .clicked()
+                        {
+                            self.rail_set_expanded(self.rail_collapsed, viewport_w);
+                        }
+                        ui.add_space(4.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(left_w, ui.spacing().interact_size.y),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
                                 ui.label(
-                                    egui::RichText::new("f")
-                                        .small()
-                                        .color(TEXT_DIM)
-                                        .background_color(RAIL)
-                                        .code(),
+                                    egui::RichText::new("Diffloom")
+                                        .size(17.0)
+                                        .strong()
+                                        .color(TEXT),
                                 );
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.search)
-                                        .desired_width((mid - 36.0).clamp(80.0, 520.0))
-                                        .hint_text("filter paths"),
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new(proj).size(12.0).color(ACCENT));
+                                ui.label(
+                                    egui::RichText::new(format!("· {branch}"))
+                                        .size(11.0)
+                                        .family(egui::FontFamily::Monospace)
+                                        .color(TEXT_DIM),
                                 );
-                            });
-                        },
-                    );
+                                ui.add_space(6.0);
+                                if ui
+                                    .small_button("Open…")
+                                    .on_hover_text("Switch workspace folder")
+                                    .clicked()
+                                {
+                                    let ctx = ui.ctx().clone();
+                                    self.pick_workspace(&ctx);
+                                }
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(mid, ui.spacing().interact_size.y),
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    ui.label(
+                                        egui::RichText::new("f")
+                                            .small()
+                                            .color(TEXT_DIM)
+                                            .background_color(RAIL)
+                                            .code(),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.search)
+                                            .desired_width((mid - 36.0).clamp(80.0, 520.0))
+                                            .hint_text("filter paths"),
+                                    );
+                                });
+                            },
+                        );
+                    });
+                    if let Some(err) = self.workspace_err.clone() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&err)
+                                    .small()
+                                    .color(egui::Color32::from_rgb(255, 140, 140)),
+                            );
+                            if ui.small_button("Dismiss").clicked() {
+                                self.workspace_err = None;
+                            }
+                        });
+                    }
                 });
             });
     }
@@ -336,19 +411,9 @@ impl DiffloomGui {
                                 .small(),
                         );
                         ui.label(egui::RichText::new("files").small().color(TEXT_DIM));
-                        ui.label(
-                            egui::RichText::new("[ / ]")
-                                .strong()
-                                .color(ACCENT)
-                                .small(),
-                        );
+                        ui.label(egui::RichText::new("[ / ]").strong().color(ACCENT).small());
                         ui.label(egui::RichText::new("version").small().color(TEXT_DIM));
-                        ui.label(
-                            egui::RichText::new("d")
-                                .strong()
-                                .color(ACCENT)
-                                .small(),
-                        );
+                        ui.label(egui::RichText::new("d").strong().color(ACCENT).small());
                         ui.label(
                             egui::RichText::new("next diff · end → next file")
                                 .small()
@@ -357,35 +422,24 @@ impl DiffloomGui {
                     });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 14.0;
-                        ui.label(
-                            egui::RichText::new("a")
-                                .strong()
-                                .color(ACCENT)
-                                .small(),
-                        );
+                        ui.label(egui::RichText::new("a").strong().color(ACCENT).small());
                         ui.label(
                             egui::RichText::new("approve (hide file) · next")
                                 .small()
                                 .color(TEXT_DIM),
                         );
-                        ui.label(
-                            egui::RichText::new("r")
-                                .strong()
-                                .color(ACCENT)
-                                .small(),
-                        );
+                        ui.label(egui::RichText::new("r").strong().color(ACCENT).small());
                         ui.label(
                             egui::RichText::new("copy unified diff")
                                 .small()
                                 .color(TEXT_DIM),
                         );
+                        ui.label(egui::RichText::new("1 · 2").strong().color(ACCENT).small());
                         ui.label(
-                            egui::RichText::new("1 · 2")
-                                .strong()
-                                .color(ACCENT)
-                                .small(),
+                            egui::RichText::new("summary / symbols")
+                                .small()
+                                .color(TEXT_DIM),
                         );
-                        ui.label(egui::RichText::new("summary / symbols").small().color(TEXT_DIM));
                     });
                 });
             });
@@ -490,7 +544,8 @@ impl DiffloomGui {
                                                 );
                                                 ui.vertical(|ui| {
                                                     ui.spacing_mut().item_spacing.y = 1.0;
-                                                    let path_color = if sel { TEXT } else { TEXT_DIM };
+                                                    let path_color =
+                                                        if sel { TEXT } else { TEXT_DIM };
                                                     let path_l = ui.add(
                                                         egui::Label::new(
                                                             egui::RichText::new(&r.path)
@@ -567,13 +622,10 @@ impl DiffloomGui {
                         }
                         ui.add_space(6.0);
                         ui.label(
-                            egui::RichText::new(format!(
-                                "VERSIONS ({})",
-                                self.path_snaps.len()
-                            ))
-                            .small()
-                            .strong()
-                            .color(ACCENT),
+                            egui::RichText::new(format!("VERSIONS ({})", self.path_snaps.len()))
+                                .small()
+                                .strong()
+                                .color(ACCENT),
                         );
                         ui.add_space(3.0);
                         for (i, s) in self.path_snaps.iter().enumerate() {
@@ -602,8 +654,7 @@ impl DiffloomGui {
                                                     |ui| {
                                                         ui.add(
                                                             egui::Label::new(
-                                                                egui::RichText::new("⏱")
-                                                                    .size(11.0),
+                                                                egui::RichText::new("⏱").size(11.0),
                                                             )
                                                             .selectable(false),
                                                         );
@@ -726,18 +777,17 @@ impl DiffloomGui {
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 2.0;
-                            ui.label(
-                                egui::RichText::new("F")
-                                    .small()
-                                    .strong()
-                                    .color(ACCENT_DIM),
-                            );
+                            ui.label(egui::RichText::new("F").small().strong().color(ACCENT_DIM));
                             for (i, (r, _st)) in self.paths_with_stats.iter().enumerate() {
                                 ui.push_id(("slim_path", i), |ui| {
                                     let sel = self.path_sel == i;
                                     let h = 22.0_f32;
                                     let pos = ui.cursor().min;
-                                    let fill = if sel { TAB_ACTIVE } else { egui::Color32::TRANSPARENT };
+                                    let fill = if sel {
+                                        TAB_ACTIVE
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    };
                                     egui::Frame::new()
                                         .fill(fill)
                                         .inner_margin(egui::Margin::same(0))
@@ -749,7 +799,11 @@ impl DiffloomGui {
                                                     egui::Label::new(
                                                         egui::RichText::new(file_glyph(&r.path))
                                                             .size(13.0)
-                                                            .color(if sel { TEXT } else { TEXT_DIM }),
+                                                            .color(if sel {
+                                                                TEXT
+                                                            } else {
+                                                                TEXT_DIM
+                                                            }),
                                                     )
                                                     .selectable(false),
                                                 );
@@ -770,31 +824,28 @@ impl DiffloomGui {
                                 });
                             }
                             ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new("V")
-                                    .small()
-                                    .strong()
-                                    .color(ACCENT_DIM),
-                            );
+                            ui.label(egui::RichText::new("V").small().strong().color(ACCENT_DIM));
                             for (i, s) in self.path_snaps.iter().enumerate() {
                                 ui.push_id(("slim_ver", s.id), |ui| {
                                     let sel = self.snap_sel == i;
                                     let h = 17.0_f32;
                                     let pos = ui.cursor().min;
-                                    let fill = if sel { TAB_ACTIVE } else { egui::Color32::TRANSPARENT };
+                                    let fill = if sel {
+                                        TAB_ACTIVE
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    };
                                     let t = egui::RichText::new(format!("{}", s.id))
                                         .family(egui::FontFamily::Monospace)
                                         .size(9.0)
                                         .color(if sel { TEXT } else { TEXT_DIM });
-                                    egui::Frame::new()
-                                        .fill(fill)
-                                        .show(ui, |ui| {
-                                            ui.set_width(ui.available_width());
-                                            ui.set_height(h);
-                                            ui.vertical_centered(|ui| {
-                                                ui.add(egui::Label::new(t).selectable(false));
-                                            });
+                                    egui::Frame::new().fill(fill).show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.set_height(h);
+                                        ui.vertical_centered(|ui| {
+                                            ui.add(egui::Label::new(t).selectable(false));
                                         });
+                                    });
                                     let row_rect =
                                         egui::Rect::from_min_size(pos, egui::vec2(RAIL_SLIM_W, h));
                                     let hit = ui.interact(
@@ -855,9 +906,7 @@ impl DiffloomGui {
             return DIFF_ROW_H;
         }
         let job = Self::code_wrap_job(text, color, code_w);
-        let galley_h = ui
-            .ctx()
-            .fonts_mut(|f| f.layout_job(job).rect.height());
+        let galley_h = ui.ctx().fonts_mut(|f| f.layout_job(job).rect.height());
         (galley_h + (CODE_PAD_Y as f32) * 2.0).max(DIFF_ROW_H)
     }
 
@@ -975,9 +1024,7 @@ impl DiffloomGui {
                             ui.with_layout(
                                 egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
                                 |ui| {
-                                    ui.add(
-                                        egui::Label::new(code_job).selectable(false),
-                                    );
+                                    ui.add(egui::Label::new(code_job).selectable(false));
                                 },
                             );
                         });
@@ -1025,11 +1072,7 @@ impl DiffloomGui {
                 ui.set_width(w);
                 ui.set_min_height(row_h);
                 match row {
-                    view::SbsRow::Equal {
-                        new_ln,
-                        right,
-                        ..
-                    } => {
+                    view::SbsRow::Equal { new_ln, right, .. } => {
                         let fill = if idx % 2 == 0 { CTX_ROW } else { CTX_ROW_ALT };
                         Self::paint_insert_only_cell(
                             ui,
@@ -1102,19 +1145,13 @@ impl DiffloomGui {
     }
 
     fn paint_sbs_spacer(ui: &mut egui::Ui, width: f32, row_h: f32) {
-        egui::Frame::new()
-            .fill(CENTER_BG)
-            .show(ui, |ui| {
-                ui.set_width(width);
-                ui.set_height(row_h);
-            });
+        egui::Frame::new().fill(CENTER_BG).show(ui, |ui| {
+            ui.set_width(width);
+            ui.set_height(row_h);
+        });
     }
 
-    fn paint_sbs_rows(
-        ui: &mut egui::Ui,
-        rows: &[view::SbsRow],
-        diff_row_sel: &mut Option<usize>,
-    ) {
+    fn paint_sbs_rows(ui: &mut egui::Ui, rows: &[view::SbsRow], diff_row_sel: &mut Option<usize>) {
         ui.spacing_mut().item_spacing.y = 0.0;
         let min_total = DIFF_SBS_MIN_HALF * 2.0 + DIFF_COL_GAP;
         let w = ui.available_width().max(min_total);
@@ -1276,8 +1313,7 @@ impl DiffloomGui {
                 ui.vertical(|ui| {
                     if let Some(s) = snap {
                         let st = self.sbs_stats;
-                        let insert_only =
-                            Self::use_insert_only_layout(&st, &self.sbs_rows);
+                        let insert_only = Self::use_insert_only_layout(&st, &self.sbs_rows);
                         let header = s.path.clone();
                         egui::Frame::new()
                             .fill(TOPBAR)
@@ -1285,14 +1321,11 @@ impl DiffloomGui {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "{}  ·  #{}",
-                                            header, s.id
-                                        ))
-                                        .strong()
-                                        .color(TEXT)
-                                        .size(12.5)
-                                        .family(egui::FontFamily::Monospace),
+                                        egui::RichText::new(format!("{}  ·  #{}", header, s.id))
+                                            .strong()
+                                            .color(TEXT)
+                                            .size(12.5)
+                                            .family(egui::FontFamily::Monospace),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -1383,12 +1416,13 @@ impl DiffloomGui {
                                 .map(|v| v.len())
                                 .unwrap_or(0);
                             let sym_lbl = format!("SYMBOLS ({sym_count})");
-                            for (i, name) in ["SUMMARY", sym_lbl.as_str()]
-                                .into_iter()
-                                .enumerate()
-                            {
+                            for (i, name) in ["SUMMARY", sym_lbl.as_str()].into_iter().enumerate() {
                                 let sel = self.bottom_tab == i;
-                                let fill = if sel { TAB_ACTIVE } else { egui::Color32::TRANSPARENT };
+                                let fill = if sel {
+                                    TAB_ACTIVE
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
                                 let text_color = if sel { ACCENT } else { TEXT_DIM };
                                 if ui
                                     .add_sized(
@@ -1413,39 +1447,35 @@ impl DiffloomGui {
                             .id_salt("diffloom_tab_scroll")
                             .max_height(tab_body_h)
                             .auto_shrink([false; 2])
-                            .show(ui, |ui| {
-                                match self.bottom_tab {
-                                    0 => {
-                                        let txt = db::snapshot_summary(&self.conn, s.id)
-                                            .ok()
-                                            .flatten()
-                                            .unwrap_or_else(|| "(no summary yet)".to_string());
+                            .show(ui, |ui| match self.bottom_tab {
+                                0 => {
+                                    let txt = db::snapshot_summary(&self.conn, s.id)
+                                        .ok()
+                                        .flatten()
+                                        .unwrap_or_else(|| "(no summary yet)".to_string());
+                                    ui.label(
+                                        egui::RichText::new(txt)
+                                            .size(12.0)
+                                            .color(TEXT)
+                                            .line_height(Some(18.0)),
+                                    );
+                                }
+                                _ => {
+                                    let rows = db::load_symbol_changes(&self.conn, s.id)
+                                        .unwrap_or_default();
+                                    if rows.is_empty() {
                                         ui.label(
-                                            egui::RichText::new(txt)
-                                                .size(12.0)
-                                                .color(TEXT)
-                                                .line_height(Some(18.0)),
+                                            egui::RichText::new("No symbol changes")
+                                                .color(TEXT_DIM),
                                         );
-                                    }
-                                    _ => {
-                                        let rows = db::load_symbol_changes(&self.conn, s.id)
-                                            .unwrap_or_default();
-                                        if rows.is_empty() {
+                                    } else {
+                                        for (c, n, k) in rows {
                                             ui.label(
-                                                egui::RichText::new("No symbol changes")
-                                                    .color(TEXT_DIM),
-                                            );
-                                        } else {
-                                            for (c, n, k) in rows {
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "{c:9} {k:8} {n}"
-                                                    ))
+                                                egui::RichText::new(format!("{c:9} {k:8} {n}"))
                                                     .family(egui::FontFamily::Monospace)
                                                     .size(11.0)
                                                     .color(TEXT),
-                                                );
-                                            }
+                                            );
                                         }
                                     }
                                 }
@@ -1471,13 +1501,9 @@ impl DiffloomGui {
             ctx.copy_text("(no snapshot)\n".to_string());
             return;
         };
-        let header = format!(
-            "--- diffloom: {} snapshot #{} ---\n\n",
-            snap.path, snap.id
-        );
-        let body = view::unified_diff_for_snapshot(&self.conn, snap.id).unwrap_or_else(|e| {
-            format!("(unified diff error)\n{e:#}\n")
-        });
+        let header = format!("--- diffloom: {} snapshot #{} ---\n\n", snap.path, snap.id);
+        let body = view::unified_diff_for_snapshot(&self.conn, snap.id)
+            .unwrap_or_else(|e| format!("(unified diff error)\n{e:#}\n"));
         ctx.copy_text(header + &body);
     }
 
@@ -1513,13 +1539,14 @@ impl DiffloomGui {
                     .find(|p| !self.read_paths.contains(*p))
                     .cloned()
             })
-            .or_else(|| ordered.iter().find(|p| !self.read_paths.contains(*p)).cloned());
-        self.path_sel = next_path
-            .and_then(|np| {
-                self.paths_with_stats
+            .or_else(|| {
+                ordered
                     .iter()
-                    .position(|(r, _)| r.path == np)
-            })
+                    .find(|p| !self.read_paths.contains(*p))
+                    .cloned()
+            });
+        self.path_sel = next_path
+            .and_then(|np| self.paths_with_stats.iter().position(|(r, _)| r.path == np))
             .unwrap_or(0)
             .min(self.paths_with_stats.len().saturating_sub(1));
         self.clear_path_nav_caches();
@@ -1556,12 +1583,14 @@ impl DiffloomGui {
 
         if !self.paths_with_stats.is_empty() {
             let n = self.paths_with_stats.len();
-            if ctx.input(|i| i.key_pressed(egui::Key::J)) || ctx.input(|i| i.key_pressed(egui::Key::S))
+            if ctx.input(|i| i.key_pressed(egui::Key::J))
+                || ctx.input(|i| i.key_pressed(egui::Key::S))
             {
                 self.path_sel = (self.path_sel + 1).min(n - 1);
                 self.clear_path_nav_caches();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::K)) || ctx.input(|i| i.key_pressed(egui::Key::W))
+            if ctx.input(|i| i.key_pressed(egui::Key::K))
+                || ctx.input(|i| i.key_pressed(egui::Key::W))
             {
                 self.path_sel = self.path_sel.saturating_sub(1);
                 self.clear_path_nav_caches();
@@ -1650,8 +1679,7 @@ impl eframe::App for DiffloomGui {
 
         self.handle_keys(ui.ctx());
 
-        ui.ctx()
-            .request_repaint_after(Duration::from_millis(900));
+        ui.ctx().request_repaint_after(Duration::from_millis(900));
     }
 }
 
@@ -1681,12 +1709,12 @@ fn setup_style(cc: &eframe::CreationContext<'_>) {
 pub fn run(root: PathBuf) -> anyhow::Result<()> {
     let root = paths::normalize_path(&root).context("root path")?;
     let conn = db::open_db(&root)?;
-    let (debouncer, file_rx) =
-        watcher::watch_workspace(root.clone(), Duration::from_millis(400))?;
+    let (debouncer, file_rx) = watcher::watch_workspace(root.clone(), Duration::from_millis(400))?;
 
+    let title = format!("Diffloom — {}", project_label(&root));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Diffloom")
+            .with_title(title)
             .with_inner_size([1240.0, 780.0])
             .with_min_inner_size([480.0, 420.0]),
         ..Default::default()
@@ -1717,6 +1745,7 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         rail_collapsed: false,
         rail_force_expanded: false,
         read_paths,
+        workspace_err: None,
     };
 
     eframe::run_native(
