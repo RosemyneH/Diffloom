@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -18,6 +19,7 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(167, 139, 250);
 const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 100, 180);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(230, 232, 240);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(130, 136, 156);
+const TEXT_READ: egui::Color32 = egui::Color32::from_rgb(88, 92, 108);
 const ADD_ROW: egui::Color32 = egui::Color32::from_rgb(16, 72, 52);
 const ADD_GUTTER: egui::Color32 = egui::Color32::from_rgb(8, 52, 38);
 const ADD_STRIP: egui::Color32 = egui::Color32::from_rgb(46, 205, 120);
@@ -78,6 +80,7 @@ struct DiffloomGui {
     paths_scan_key: String,
     rail_collapsed: bool,
     rail_force_expanded: bool,
+    read_paths: HashSet<String>,
 }
 
 fn project_label(root: &std::path::Path) -> String {
@@ -317,29 +320,68 @@ impl DiffloomGui {
             .inner_margin(egui::Margin::symmetric(10, 4))
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 14.0;
-                    ui.label(
-                        egui::RichText::new("j / k")
-                            .strong()
-                            .color(ACCENT)
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("file").small().color(TEXT_DIM));
-                    ui.label(
-                        egui::RichText::new("[ / ]")
-                            .strong()
-                            .color(ACCENT)
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("version").small().color(TEXT_DIM));
-                    ui.label(
-                        egui::RichText::new("1 · 2")
-                            .strong()
-                            .color(ACCENT)
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("summary / symbols").small().color(TEXT_DIM));
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        ui.label(
+                            egui::RichText::new("j / k  ·  w / s")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(egui::RichText::new("files").small().color(TEXT_DIM));
+                        ui.label(
+                            egui::RichText::new("[ / ]")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(egui::RichText::new("version").small().color(TEXT_DIM));
+                        ui.label(
+                            egui::RichText::new("d")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new("next diff · end → next file")
+                                .small()
+                                .color(TEXT_DIM),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 14.0;
+                        ui.label(
+                            egui::RichText::new("a")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new("mark read · next unread")
+                                .small()
+                                .color(TEXT_DIM),
+                        );
+                        ui.label(
+                            egui::RichText::new("r")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new("copy unified diff")
+                                .small()
+                                .color(TEXT_DIM),
+                        );
+                        ui.label(
+                            egui::RichText::new("1 · 2")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(egui::RichText::new("summary / symbols").small().color(TEXT_DIM));
+                    });
                 });
             });
     }
@@ -430,7 +472,14 @@ impl DiffloomGui {
                                                                 egui::RichText::new(file_glyph(
                                                                     &r.path,
                                                                 ))
-                                                                .size(12.0),
+                                                                .size(12.0)
+                                                                .color(if sel {
+                                                                    TEXT
+                                                                } else if self.read_paths.contains(&r.path) {
+                                                                    TEXT_READ
+                                                                } else {
+                                                                    TEXT_DIM
+                                                                }),
                                                             )
                                                             .selectable(false),
                                                         );
@@ -438,7 +487,14 @@ impl DiffloomGui {
                                                 );
                                                 ui.vertical(|ui| {
                                                     ui.spacing_mut().item_spacing.y = 1.0;
-                                                    let path_color = if sel { TEXT } else { TEXT_DIM };
+                                                    let is_read = self.read_paths.contains(&r.path);
+                                                    let path_color = if sel {
+                                                        TEXT
+                                                    } else if is_read {
+                                                        TEXT_READ
+                                                    } else {
+                                                        TEXT_DIM
+                                                    };
                                                     let path_l = ui.add(
                                                         egui::Label::new(
                                                             egui::RichText::new(&r.path)
@@ -696,7 +752,14 @@ impl DiffloomGui {
                                                 ui.add(
                                                     egui::Label::new(
                                                         egui::RichText::new(file_glyph(&r.path))
-                                                            .size(13.0),
+                                                            .size(13.0)
+                                                            .color(if sel {
+                                                                TEXT
+                                                            } else if self.read_paths.contains(&r.path) {
+                                                                TEXT_READ
+                                                            } else {
+                                                                TEXT_DIM
+                                                            }),
                                                     )
                                                     .selectable(false),
                                                 );
@@ -1407,20 +1470,95 @@ impl DiffloomGui {
             });
     }
 
+    fn clear_path_nav_caches(&mut self) {
+        self.path_versions_path = None;
+        self.diff_cache_id = None;
+        self.diff_row_sel = None;
+    }
+
+    fn copy_diff_clipboard(&mut self, ctx: &egui::Context) {
+        let Some(snap) = self.path_snaps.get(self.snap_sel) else {
+            ctx.copy_text("(no snapshot)\n".to_string());
+            return;
+        };
+        let header = format!(
+            "--- diffloom: {} snapshot #{} ---\n\n",
+            snap.path, snap.id
+        );
+        let body = view::unified_diff_for_snapshot(&self.conn, snap.id).unwrap_or_else(|e| {
+            format!("(unified diff error)\n{e:#}\n")
+        });
+        ctx.copy_text(header + &body);
+    }
+
+    fn mark_read_and_advance(&mut self) {
+        let n = self.paths_with_stats.len();
+        if n == 0 {
+            return;
+        }
+        if let Some((r, _)) = self.paths_with_stats.get(self.path_sel) {
+            self.read_paths.insert(r.path.clone());
+            let _ = db::read_paths_save(&self.conn, &self.read_paths);
+        }
+        let start = (self.path_sel + 1) % n;
+        let mut idx = start;
+        loop {
+            if let Some((r, _)) = self.paths_with_stats.get(idx) {
+                if !self.read_paths.contains(&r.path) {
+                    self.path_sel = idx;
+                    self.clear_path_nav_caches();
+                    return;
+                }
+            }
+            idx = (idx + 1) % n;
+            if idx == start {
+                break;
+            }
+        }
+        self.path_sel = (self.path_sel + 1) % n;
+        self.clear_path_nav_caches();
+    }
+
+    fn advance_diff_or_file(&mut self) {
+        let n = self.paths_with_stats.len();
+        if n == 0 {
+            return;
+        }
+        let m = self.path_snaps.len();
+        if m <= 1 {
+            self.path_sel = (self.path_sel + 1) % n;
+            self.clear_path_nav_caches();
+            return;
+        }
+        if self.snap_sel < m - 1 {
+            self.snap_sel += 1;
+            self.diff_cache_id = None;
+            self.diff_row_sel = None;
+        } else {
+            self.path_sel = (self.path_sel + 1) % n;
+            self.clear_path_nav_caches();
+        }
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        if ctx.input(|i| i.modifiers.ctrl || i.modifiers.alt || i.modifiers.command) {
+            return;
+        }
+
         if !self.paths_with_stats.is_empty() {
             let n = self.paths_with_stats.len();
-            if ctx.input(|i| i.key_pressed(egui::Key::J)) {
+            if ctx.input(|i| i.key_pressed(egui::Key::J)) || ctx.input(|i| i.key_pressed(egui::Key::S))
+            {
                 self.path_sel = (self.path_sel + 1).min(n - 1);
-                self.path_versions_path = None;
-                self.diff_cache_id = None;
-                self.diff_row_sel = None;
+                self.clear_path_nav_caches();
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::K)) {
+            if ctx.input(|i| i.key_pressed(egui::Key::K)) || ctx.input(|i| i.key_pressed(egui::Key::W))
+            {
                 self.path_sel = self.path_sel.saturating_sub(1);
-                self.path_versions_path = None;
-                self.diff_cache_id = None;
-                self.diff_row_sel = None;
+                self.clear_path_nav_caches();
             }
         }
         if self.path_snaps.len() > 1 {
@@ -1441,6 +1579,15 @@ impl DiffloomGui {
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
             self.bottom_tab = 1;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::R)) {
+            self.copy_diff_clipboard(ctx);
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::A)) {
+            self.mark_read_and_advance();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::D)) {
+            self.advance_diff_or_file();
         }
     }
 }
@@ -1539,6 +1686,7 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         ..Default::default()
     };
 
+    let read_paths = db::read_paths_load(&conn).unwrap_or_default();
     let app = DiffloomGui {
         root,
         conn,
@@ -1562,6 +1710,7 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         paths_scan_key: String::new(),
         rail_collapsed: false,
         rail_force_expanded: false,
+        read_paths,
     };
 
     eframe::run_native(

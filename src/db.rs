@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -97,6 +98,21 @@ pub fn meta_set(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<(
         params![key, value],
     )?;
     Ok(())
+}
+
+pub fn read_paths_load(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let Some(raw) = meta_get(conn, "read_paths_json")? else {
+        return Ok(HashSet::new());
+    };
+    let v: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+    Ok(v.into_iter().collect())
+}
+
+pub fn read_paths_save(conn: &Connection, paths: &HashSet<String>) -> rusqlite::Result<()> {
+    let mut v: Vec<String> = paths.iter().cloned().collect();
+    v.sort();
+    let raw = serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string());
+    meta_set(conn, "read_paths_json", &raw)
 }
 
 pub fn active_session_id(conn: &Connection) -> rusqlite::Result<Option<i64>> {
