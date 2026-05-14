@@ -17,10 +17,17 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(167, 139, 250);
 const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 100, 180);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(230, 232, 240);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(130, 136, 156);
-const ADD_BG: egui::Color32 = egui::Color32::from_rgb(22, 42, 34);
-const ADD_FG: egui::Color32 = egui::Color32::from_rgb(130, 220, 170);
-const DEL_BG: egui::Color32 = egui::Color32::from_rgb(42, 24, 28);
-const DEL_FG: egui::Color32 = egui::Color32::from_rgb(255, 130, 130);
+const ADD_ROW: egui::Color32 = egui::Color32::from_rgb(16, 72, 52);
+const ADD_GUTTER: egui::Color32 = egui::Color32::from_rgb(8, 52, 38);
+const ADD_STRIP: egui::Color32 = egui::Color32::from_rgb(46, 205, 120);
+const ADD_FG: egui::Color32 = egui::Color32::from_rgb(210, 255, 225);
+const DEL_ROW: egui::Color32 = egui::Color32::from_rgb(88, 26, 38);
+const DEL_GUTTER: egui::Color32 = egui::Color32::from_rgb(58, 16, 26);
+const DEL_STRIP: egui::Color32 = egui::Color32::from_rgb(255, 82, 99);
+const DEL_FG: egui::Color32 = egui::Color32::from_rgb(255, 220, 224);
+const CTX_ROW: egui::Color32 = egui::Color32::from_rgb(22, 24, 30);
+const CTX_ROW_ALT: egui::Color32 = egui::Color32::from_rgb(18, 20, 26);
+const HUNK_BAR: egui::Color32 = egui::Color32::from_rgb(40, 36, 58);
 const TAB_ACTIVE: egui::Color32 = egui::Color32::from_rgb(36, 32, 52);
 const STATUS_BG: egui::Color32 = egui::Color32::from_rgb(16, 17, 22);
 
@@ -209,25 +216,109 @@ impl DiffloomGui {
     }
 
     fn paint_diff_lines(ui: &mut egui::Ui, text: &str) {
-        for line in text.lines() {
-            let (fg, bg) = if line.starts_with('+') && !line.starts_with("+++") {
-                (ADD_FG, ADD_BG)
-            } else if line.starts_with('-') && !line.starts_with("---") {
-                (DEL_FG, DEL_BG)
-            } else {
-                (TEXT_DIM, CENTER_BG)
-            };
-            egui::Frame::new()
-                .fill(bg)
-                .inner_margin(egui::Margin::symmetric(8, 2))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(line)
-                            .family(egui::FontFamily::Monospace)
-                            .size(12.0)
-                            .color(fg),
-                    );
-                });
+        let row_h = ui.spacing().interact_size.y.max(20.0);
+        let full_w = ui.available_width();
+        for (idx, line) in text.lines().enumerate() {
+            ui.push_id(("diffline", idx), |ui| {
+                let is_path_new = line.starts_with("+++");
+                let is_path_old = line.starts_with("---");
+                let is_hunk = line.starts_with("@@");
+                let is_add = line.starts_with('+') && !is_path_new;
+                let is_del = line.starts_with('-') && !is_path_old;
+
+                if is_path_new || is_path_old || is_hunk {
+                    let fill = if is_hunk { HUNK_BAR } else { TOPBAR };
+                    egui::Frame::new()
+                        .fill(fill)
+                        .inner_margin(egui::Margin::symmetric(10, 4))
+                        .show(ui, |ui| {
+                            ui.set_width(full_w);
+                            ui.label(
+                                egui::RichText::new(line)
+                                    .family(egui::FontFamily::Monospace)
+                                    .size(12.0)
+                                    .color(if is_hunk { ACCENT } else { TEXT_DIM }),
+                            );
+                        });
+                    return;
+                }
+
+                let (strip, gutter, row, sign, rest, fg) = if is_add {
+                    (
+                        ADD_STRIP,
+                        ADD_GUTTER,
+                        ADD_ROW,
+                        "+",
+                        line.get(1..).unwrap_or(""),
+                        ADD_FG,
+                    )
+                } else if is_del {
+                    (
+                        DEL_STRIP,
+                        DEL_GUTTER,
+                        DEL_ROW,
+                        "−",
+                        line.get(1..).unwrap_or(""),
+                        DEL_FG,
+                    )
+                } else {
+                    let rest = line.strip_prefix(' ').unwrap_or(line);
+                    let row = if idx % 2 == 0 { CTX_ROW } else { CTX_ROW_ALT };
+                    (
+                        egui::Color32::TRANSPARENT,
+                        egui::Color32::from_rgb(26, 28, 36),
+                        row,
+                        " ",
+                        rest,
+                        TEXT_DIM,
+                    )
+                };
+
+                egui::Frame::new()
+                    .fill(row)
+                    .inner_margin(egui::Margin::ZERO)
+                    .show(ui, |ui| {
+                        ui.set_width(full_w);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                            if strip != egui::Color32::TRANSPARENT {
+                                egui::Frame::new()
+                                    .fill(strip)
+                                    .show(ui, |ui| {
+                                        ui.set_width(5.0);
+                                        ui.set_min_height(row_h);
+                                    });
+                            }
+                            egui::Frame::new()
+                                .fill(gutter)
+                                .inner_margin(egui::Margin::symmetric(0, 3))
+                                .show(ui, |ui| {
+                                    ui.set_width(26.0);
+                                    ui.set_min_height(row_h);
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(sign)
+                                                .strong()
+                                                .size(13.0)
+                                                .color(fg),
+                                        );
+                                    });
+                                });
+                            egui::Frame::new()
+                                .fill(row)
+                                .inner_margin(egui::Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.set_min_height(row_h);
+                                    ui.label(
+                                        egui::RichText::new(rest)
+                                            .family(egui::FontFamily::Monospace)
+                                            .size(12.5)
+                                            .color(fg),
+                                    );
+                                });
+                        });
+                    });
+            });
         }
     }
 
