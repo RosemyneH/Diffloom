@@ -164,11 +164,6 @@ impl DiffloomGui {
         }
     }
 
-    fn refresh_lists(&mut self) {
-        self.rebuild_path_listings();
-        self.sync_selected_path_versions();
-    }
-
     fn recompute_diff_cache(&mut self) {
         let sid = self.path_snaps.get(self.snap_sel).map(|s| s.id);
         if self.diff_cache_id == sid {
