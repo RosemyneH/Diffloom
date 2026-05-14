@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
@@ -9,7 +11,10 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
-    #[arg(long, help = "Workspace root (required for interactive UI)")]
+    #[arg(
+        long,
+        help = "Workspace directory for the TUI (defaults to the current directory)"
+    )]
     root: Option<std::path::PathBuf>,
 }
 
@@ -32,9 +37,15 @@ fn main() -> anyhow::Result<()> {
             rt.block_on(diffloom::mcp_server::run_stdio())?;
         }
         None => {
+            if !std::io::stdout().is_terminal() {
+                anyhow::bail!(
+                    "TUI needs an interactive terminal. Open a real terminal, or run `diffloom mcp` for stdio MCP mode."
+                );
+            }
             let root = cli
                 .root
-                .context("missing --root (workspace directory for the TUI watcher)")?;
+                .or_else(|| std::env::current_dir().ok())
+                .context("set --root or run from a directory you can use as the workspace")?;
             diffloom::tui::run(root)?;
         }
     }
