@@ -137,6 +137,7 @@ pub enum SbsRow {
         left: String,
         right: String,
     },
+    Skipped { unchanged: usize },
 }
 
 pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
@@ -224,4 +225,110 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
         }
     }
     (rows, stats)
+}
+
+fn is_sbs_equal(row: &SbsRow) -> bool {
+    matches!(row, SbsRow::Equal { .. })
+}
+
+fn trim_all_equal_block(rows: Vec<SbsRow>, ctx: usize) -> Vec<SbsRow> {
+    let n = rows.len();
+    if n <= 2 * ctx + 1 {
+        return rows;
+    }
+    let mut out = rows[..ctx].to_vec();
+    out.push(SbsRow::Skipped {
+        unchanged: n - 2 * ctx,
+    });
+    out.extend(rows[n - ctx..].iter().cloned());
+    out
+}
+
+enum EqualRunPlace {
+    BeforeFirstChange,
+    Between,
+    AfterLastChange,
+}
+
+fn take_equal_run(run: &[SbsRow], ctx: usize, place: EqualRunPlace) -> Vec<SbsRow> {
+    if run.is_empty() {
+        return vec![];
+    }
+    let n = run.len();
+    match place {
+        EqualRunPlace::BeforeFirstChange => {
+            if n <= ctx {
+                run.to_vec()
+            } else {
+                run[n - ctx..].to_vec()
+            }
+        }
+        EqualRunPlace::AfterLastChange => {
+            if n <= ctx {
+                run.to_vec()
+            } else {
+                run[..ctx].to_vec()
+            }
+        }
+        EqualRunPlace::Between => {
+            if n <= 2 * ctx {
+                run.to_vec()
+            } else {
+                let mut v = run[..ctx].to_vec();
+                v.push(SbsRow::Skipped {
+                    unchanged: n - 2 * ctx,
+                });
+                v.extend(run[n - ctx..].iter().cloned());
+                v
+            }
+        }
+    }
+}
+
+pub fn collapse_sbs_context(rows: Vec<SbsRow>, ctx: usize) -> Vec<SbsRow> {
+    if rows.is_empty() || ctx == 0 {
+        return rows;
+    }
+    let n = rows.len();
+    let change_ix: Vec<usize> = (0..n).filter(|&i| !is_sbs_equal(&rows[i])).collect();
+    if change_ix.is_empty() {
+        return trim_all_equal_block(rows, ctx);
+    }
+    let mut out = Vec::new();
+    let mut seg_start = 0usize;
+    for (ci, &ix) in change_ix.iter().enumerate() {
+        let place = if ci == 0 {
+            EqualRunPlace::BeforeFirstChange
+        } else {
+            EqualRunPlace::Between
+        };
+        let seg = &rows[seg_start..ix];
+        if !seg.is_empty() && seg.iter().all(is_sbs_equal) {
+            out.extend(take_equal_run(seg, ctx, place));
+        } else if !seg.is_empty() {
+            out.extend_from_slice(seg);
+        }
+        out.push(rows[ix].clone());
+        seg_start = ix + 1;
+    }
+    let tail = &rows[seg_start..n];
+    if !tail.is_empty() && tail.iter().all(is_sbs_equal) {
+        out.extend(take_equal_run(tail, ctx, EqualRunPlace::AfterLastChange));
+    } else if !tail.is_empty() {
+        out.extend_from_slice(tail);
+    }
+    out
+}
+
+pub fn side_by_side_rows_focused(
+    old: &str,
+    new: &str,
+    context_lines: usize,
+) -> (Vec<SbsRow>, DiffLineStats) {
+    let (rows, stats) = side_by_side_rows(old, new);
+    if context_lines == 0 {
+        (rows, stats)
+    } else {
+        (collapse_sbs_context(rows, context_lines), stats)
+    }
 }

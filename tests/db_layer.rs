@@ -274,3 +274,59 @@ fn list_commit_groups_dedupes_by_commit() {
     assert_eq!(groups[1].git_commit, "deadbeef");
     assert_eq!(groups[1].snapshot_id, id1 + 1);
 }
+
+#[test]
+fn list_paths_by_scope_requires_two_snapshots_when_all_sessions() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    db::configure(&mut conn).unwrap();
+    db::migrate(&conn).unwrap();
+    conn
+        .execute(
+            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+            [],
+        )
+        .unwrap();
+    let sid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
+         VALUES (?1, 'only.rs', 0, 'a', 1, 1, 0)",
+        [sid],
+    )
+    .unwrap();
+    let paths = db::list_paths_by_scope(&conn, None, 20).unwrap();
+    assert!(paths.is_empty(), "single snapshot path should not list globally");
+
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
+         VALUES (?1, 'only.rs', 0, 'b', 1, 2, 0)",
+        [sid],
+    )
+    .unwrap();
+    let paths = db::list_paths_by_scope(&conn, None, 20).unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].path, "only.rs");
+    assert_eq!(paths[0].snapshot_count, 2);
+}
+
+#[test]
+fn list_paths_by_scope_session_lists_single_snapshot_paths() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    db::configure(&mut conn).unwrap();
+    db::migrate(&conn).unwrap();
+    conn
+        .execute(
+            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+            [],
+        )
+        .unwrap();
+    let sid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
+         VALUES (?1, 'one.rs', 0, 'a', 1, 1, 0)",
+        [sid],
+    )
+    .unwrap();
+    let paths = db::list_paths_by_scope(&conn, Some(sid), 20).unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].snapshot_count, 1);
+}

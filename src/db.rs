@@ -237,6 +237,58 @@ pub fn list_snapshots_for_path(
     rows.collect()
 }
 
+#[derive(Debug, Clone)]
+pub struct PathHistoryRow {
+    pub path: String,
+    pub latest_id: i64,
+    pub snapshot_count: i64,
+}
+
+pub fn list_paths_by_scope(
+    conn: &Connection,
+    session_id: Option<i64>,
+    limit: i64,
+) -> rusqlite::Result<Vec<PathHistoryRow>> {
+    match session_id {
+        None => {
+            let mut stmt = conn.prepare(
+                "SELECT path, MAX(id) AS lid, COUNT(*) AS n
+                 FROM snapshots
+                 GROUP BY path
+                 HAVING n >= 2
+                 ORDER BY lid DESC
+                 LIMIT ?1",
+            )?;
+            let rows = stmt.query_map([limit], |r| {
+                Ok(PathHistoryRow {
+                    path: r.get(0)?,
+                    latest_id: r.get(1)?,
+                    snapshot_count: r.get(2)?,
+                })
+            })?;
+            rows.collect()
+        }
+        Some(sid) => {
+            let mut stmt = conn.prepare(
+                "SELECT path, MAX(id) AS lid, COUNT(*) AS n
+                 FROM snapshots
+                 WHERE session_id = ?1
+                 GROUP BY path
+                 ORDER BY lid DESC
+                 LIMIT ?2",
+            )?;
+            let rows = stmt.query_map(params![sid, limit], |r| {
+                Ok(PathHistoryRow {
+                    path: r.get(0)?,
+                    latest_id: r.get(1)?,
+                    snapshot_count: r.get(2)?,
+                })
+            })?;
+            rows.collect()
+        }
+    }
+}
+
 pub fn list_commit_groups(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<CommitGroupRow>> {
     let mut stmt = conn.prepare(
         "SELECT s.git_commit, s.id, s.created_at

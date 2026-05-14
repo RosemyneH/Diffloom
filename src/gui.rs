@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -13,7 +12,6 @@ use crate::{db, git_info, ingest, paths, view, watcher};
 const CANVAS: egui::Color32 = egui::Color32::from_rgb(11, 12, 16);
 const TOPBAR: egui::Color32 = egui::Color32::from_rgb(18, 19, 26);
 const RAIL: egui::Color32 = egui::Color32::from_rgb(20, 22, 30);
-const RAIL_ICON: egui::Color32 = egui::Color32::from_rgb(16, 17, 24);
 const RAIL_EDGE: egui::Color32 = egui::Color32::from_rgb(42, 46, 58);
 const CENTER_BG: egui::Color32 = egui::Color32::from_rgb(14, 15, 20);
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(167, 139, 250);
@@ -33,10 +31,11 @@ const CTX_ROW_ALT: egui::Color32 = egui::Color32::from_rgb(18, 20, 26);
 const BOTH_LEFT: egui::Color32 = egui::Color32::from_rgb(48, 28, 34);
 const BOTH_RIGHT: egui::Color32 = egui::Color32::from_rgb(18, 58, 42);
 const TAB_ACTIVE: egui::Color32 = egui::Color32::from_rgb(36, 32, 52);
+const HUNK_BAR: egui::Color32 = egui::Color32::from_rgb(40, 36, 58);
 const STATUS_BG: egui::Color32 = egui::Color32::from_rgb(16, 17, 22);
+const DIFF_CONTEXT_LINES: usize = 3;
 
-type ChangeEntry = (db::SnapshotListRow, view::DiffLineStats);
-type CommitEntry = (db::CommitGroupRow, view::DiffLineStats);
+type PathWithStats = (db::PathHistoryRow, view::DiffLineStats);
 
 struct DiffloomGui {
     root: PathBuf,
@@ -44,12 +43,13 @@ struct DiffloomGui {
     file_rx: std::sync::mpsc::Receiver<PathBuf>,
     _debouncer: Debouncer<RecommendedWatcher>,
     sessions: Vec<db::SessionRow>,
-    snaps: Vec<db::SnapshotListRow>,
-    changes: Vec<ChangeEntry>,
-    commits: Vec<CommitEntry>,
+    paths_with_stats: Vec<PathWithStats>,
+    path_sel: usize,
+    path_versions_path: Option<String>,
+    path_snaps: Vec<db::SnapshotListRow>,
+    snap_stats: Vec<Option<view::DiffLineStats>>,
+    snap_sel: usize,
     session_filter: Option<i64>,
-    change_sel: usize,
-    rail_tab: usize,
     search: String,
     bottom_tab: usize,
     diff_cache_id: Option<i64>,
@@ -71,70 +71,79 @@ fn short_sha(s: &str) -> String {
 
 impl DiffloomGui {
     fn refresh_lists(&mut self) {
-        self.sessions = db::list_sessions(&self.conn, 40).unwrap_or_default();
-        let mut snaps = match self.session_filter {
-            Some(sid) => db::list_snapshots_for_session(&self.conn, sid, 200).unwrap_or_default(),
-            None => db::list_recent_snapshots(&self.conn, 200).unwrap_or_default(),
-        };
+        self.sessions = db::list_sessions(&self.conn, 80).unwrap_or_default();
+        let mut rows = db::list_paths_by_scope(&self.conn, self.session_filter, 200)
+            .unwrap_or_default();
         let q = self.search.trim().to_lowercase();
         if !q.is_empty() {
-            snaps.retain(|s| s.path.to_lowercase().contains(&q));
+            rows.retain(|r| r.path.to_lowercase().contains(&q));
         }
-        self.snaps = snaps;
-
-        let mut seen = HashSet::<String>::new();
-        let mut changes = Vec::new();
-        for s in &self.snaps {
-            if seen.contains(&s.path) {
-                continue;
-            }
-            seen.insert(s.path.clone());
-            let has_prev = db::previous_snapshot_id(&self.conn, &s.path, s.id)
-                .ok()
-                .flatten()
-                .is_some();
-            if !has_prev {
-                continue;
-            }
-            if let Ok(Some((ref old, ref new))) = view::snapshot_old_new_strings(&self.conn, s.id) {
-                let stats = view::count_line_changes(old, new);
-                changes.push((s.clone(), stats));
-            }
-        }
-        self.changes = changes;
-        if self.changes.is_empty() {
-            self.change_sel = 0;
-        } else {
-            self.change_sel = self.change_sel.min(self.changes.len() - 1);
-        }
-
-        let groups = db::list_commit_groups(&self.conn, 24).unwrap_or_default();
-        self.commits = groups
+        self.paths_with_stats = rows
             .into_iter()
-            .map(|g| {
-                let st = view::snapshot_old_new_strings(&self.conn, g.snapshot_id)
+            .map(|r| {
+                let st = view::snapshot_old_new_strings(&self.conn, r.latest_id)
                     .ok()
                     .flatten()
                     .map(|(o, n)| view::count_line_changes(&o, &n))
                     .unwrap_or_default();
-                (g, st)
+                (r, st)
             })
             .collect();
+
+        if self.path_sel >= self.paths_with_stats.len() {
+            self.path_sel = self.paths_with_stats.len().saturating_sub(1);
+        }
+
+        let want_path = self
+            .paths_with_stats
+            .get(self.path_sel)
+            .map(|(r, _)| r.path.clone());
+        if want_path.as_ref() != self.path_versions_path.as_ref() {
+            self.path_versions_path = want_path.clone();
+            self.snap_sel = 0;
+            self.diff_cache_id = None;
+            match want_path.as_deref() {
+                None | Some("") => {
+                    self.path_snaps.clear();
+                    self.snap_stats.clear();
+                }
+                Some(p) => {
+                    self.path_snaps =
+                        db::list_snapshots_for_path(&self.conn, p, 120).unwrap_or_default();
+                    self.snap_stats = self
+                        .path_snaps
+                        .iter()
+                        .map(|s| {
+                            view::snapshot_old_new_strings(&self.conn, s.id)
+                                .ok()
+                                .flatten()
+                                .map(|(o, n)| view::count_line_changes(&o, &n))
+                        })
+                        .collect();
+                }
+            }
+        }
+        if !self.path_snaps.is_empty() {
+            self.snap_sel = self.snap_sel.min(self.path_snaps.len() - 1);
+        } else {
+            self.snap_sel = 0;
+        }
     }
 
     fn recompute_diff_cache(&mut self) {
-        let id = self.changes.get(self.change_sel).map(|(s, _)| s.id);
-        if self.diff_cache_id == id {
+        let sid = self.path_snaps.get(self.snap_sel).map(|s| s.id);
+        if self.diff_cache_id == sid {
             return;
         }
-        self.diff_cache_id = id;
-        match id {
-            Some(sid) => {
-                self.diff_cache_text = view::unified_diff_for_snapshot(&self.conn, sid)
+        self.diff_cache_id = sid;
+        match sid {
+            Some(id) => {
+                self.diff_cache_text = view::unified_diff_for_snapshot(&self.conn, id)
                     .unwrap_or_else(|e| format!("(diff unavailable)\n{e:#}\n"));
-                if let Ok(Some((ref old, ref new))) = view::snapshot_old_new_strings(&self.conn, sid)
+                if let Ok(Some((ref old, ref new))) = view::snapshot_old_new_strings(&self.conn, id)
                 {
-                    let (rows, stats) = view::side_by_side_rows(old, new);
+                    let (rows, stats) =
+                        view::side_by_side_rows_focused(old, new, DIFF_CONTEXT_LINES);
                     self.sbs_rows = rows;
                     self.sbs_stats = stats;
                 } else {
@@ -151,9 +160,9 @@ impl DiffloomGui {
     }
 
     fn totals_footer(&self) -> (u32, u32) {
-        self.changes.iter().fold((0u32, 0u32), |(a, d), (_, s)| {
-            (a + s.insertions, d + s.deletions)
-        })
+        self.paths_with_stats
+            .iter()
+            .fold((0u32, 0u32), |(a, d), (_, s)| (a + s.insertions, d + s.deletions))
     }
 
     fn top_bar(&mut self, ui: &mut egui::Ui) {
@@ -166,9 +175,8 @@ impl DiffloomGui {
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
             .show(ui, |ui| {
                 let full = ui.available_width();
-                let left_w = 260.0_f32;
-                let right_w = 140.0_f32;
-                let mid = (full - left_w - right_w).max(120.0);
+                let left_w = 200.0_f32;
+                let mid = (full - left_w - 24.0).max(120.0);
                 ui.horizontal(|ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2(left_w, ui.spacing().interact_size.y),
@@ -176,32 +184,22 @@ impl DiffloomGui {
                         |ui| {
                             ui.label(
                                 egui::RichText::new("Diffloom")
-                                    .size(19.0)
+                                    .size(18.0)
                                     .strong()
                                     .color(TEXT),
                             );
-                            ui.add_space(10.0);
-                            egui::ComboBox::from_id_salt("diffloom_proj")
-                                .selected_text(
-                                    egui::RichText::new(&proj)
-                                        .size(12.5)
-                                        .color(ACCENT),
-                                )
-                                .width(110.0)
-                                .show_ui(ui, |ui| {
-                                    let _ = ui.selectable_label(true, &proj);
-                                });
-                            egui::ComboBox::from_id_salt("diffloom_branch")
-                                .selected_text(
-                                    egui::RichText::new(&branch)
-                                        .size(12.0)
-                                        .family(egui::FontFamily::Monospace)
-                                        .color(TEXT_DIM),
-                                )
-                                .width(90.0)
-                                .show_ui(ui, |ui| {
-                                    let _ = ui.selectable_label(true, &branch);
-                                });
+                            ui.add_space(12.0);
+                            ui.label(
+                                egui::RichText::new(proj)
+                                    .size(12.5)
+                                    .color(ACCENT),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("· {branch}"))
+                                    .size(11.5)
+                                    .family(egui::FontFamily::Monospace)
+                                    .color(TEXT_DIM),
+                            );
                         },
                     );
                     ui.allocate_ui_with_layout(
@@ -219,19 +217,10 @@ impl DiffloomGui {
                                 );
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.search)
-                                        .desired_width((mid - 36.0).clamp(80.0, 420.0))
-                                        .hint_text("f to search"),
+                                        .desired_width((mid - 36.0).clamp(80.0, 520.0))
+                                        .hint_text("filter paths"),
                                 );
                             });
-                        },
-                    );
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(right_w, ui.spacing().interact_size.y),
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.label(egui::RichText::new("?").color(TEXT_DIM).size(16.0));
-                            ui.add_space(12.0);
-                            ui.label(egui::RichText::new("⚙").color(TEXT_DIM).size(15.0));
                         },
                     );
                 });
@@ -245,69 +234,28 @@ impl DiffloomGui {
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 16.0;
+                    ui.spacing_mut().item_spacing.x = 14.0;
                     ui.label(
                         egui::RichText::new("j / k")
                             .strong()
                             .color(ACCENT)
                             .small(),
                     );
-                    ui.label(egui::RichText::new("next file").small().color(TEXT_DIM));
+                    ui.label(egui::RichText::new("file").small().color(TEXT_DIM));
                     ui.label(
-                        egui::RichText::new("← / →")
+                        egui::RichText::new("[ / ]")
                             .strong()
                             .color(ACCENT)
                             .small(),
                     );
-                    ui.label(egui::RichText::new("prev / next file").small().color(TEXT_DIM));
+                    ui.label(egui::RichText::new("version").small().color(TEXT_DIM));
                     ui.label(
-                        egui::RichText::new("enter")
+                        egui::RichText::new("1 · 2")
                             .strong()
                             .color(ACCENT)
                             .small(),
                     );
-                    ui.label(egui::RichText::new("stage").small().color(TEXT_DIM));
-                    ui.label(
-                        egui::RichText::new("1 · 2 · 3")
-                            .strong()
-                            .color(ACCENT)
-                            .small(),
-                    );
-                    ui.label(egui::RichText::new("bottom tab").small().color(TEXT_DIM));
-                });
-            });
-    }
-
-    fn icon_rail(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::new()
-            .fill(RAIL_ICON)
-            .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
-            .inner_margin(egui::Margin::symmetric(0, 10))
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    let icons = ["📄", "🕐", "⑂", "✓", "⚙"];
-                    for (i, icon) in icons.iter().enumerate() {
-                        let sel = self.rail_tab == i;
-                        let fill = if sel { TAB_ACTIVE } else { egui::Color32::TRANSPARENT };
-                        if ui
-                            .add_sized(
-                                [36.0, 36.0],
-                                egui::Button::new(
-                                    egui::RichText::new(*icon).size(17.0).color(if sel {
-                                        ACCENT
-                                    } else {
-                                        TEXT_DIM
-                                    }),
-                                )
-                                .fill(fill)
-                                .stroke(egui::Stroke::NONE),
-                            )
-                            .clicked()
-                        {
-                            self.rail_tab = i;
-                        }
-                        ui.add_space(4.0);
-                    }
+                    ui.label(egui::RichText::new("summary / symbols").small().color(TEXT_DIM));
                 });
             });
     }
@@ -319,99 +267,113 @@ impl DiffloomGui {
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
             .inner_margin(egui::Margin::symmetric(10, 10))
             .show(ui, |ui| {
+                egui::ComboBox::from_id_salt("diffloom_scope")
+                    .width(ui.available_width())
+                    .selected_text(match self.session_filter {
+                        None => "All sessions".to_string(),
+                        Some(id) => self
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .map(|s| format!("{} · {}", s.title, s.kind))
+                            .unwrap_or_else(|| format!("session #{id}")),
+                    })
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(self.session_filter.is_none(), "All sessions")
+                            .clicked()
+                        {
+                            self.session_filter = None;
+                            self.path_versions_path = None;
+                            self.diff_cache_id = None;
+                        }
+                        for s in &self.sessions {
+                            let sel = self.session_filter == Some(s.id);
+                            let label = format!("{} [{}]", s.title, s.kind);
+                            if ui.selectable_label(sel, &label).clicked() {
+                                self.session_filter = Some(s.id);
+                                self.path_versions_path = None;
+                                self.diff_cache_id = None;
+                            }
+                        }
+                    });
+                ui.add_space(10.0);
                 egui::ScrollArea::vertical()
                     .id_salt("diffloom_sidebar_scroll")
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
                         ui.label(
-                            egui::RichText::new(format!("CHANGES ({})", self.changes.len()))
+                            egui::RichText::new(format!("FILES ({})", self.paths_with_stats.len()))
                                 .small()
                                 .strong()
                                 .color(ACCENT),
                         );
                         ui.add_space(6.0);
-                        for (i, (s, stats)) in self.changes.iter().enumerate() {
-                            ui.push_id(("chg", s.id), |ui| {
-                                let sel = self.change_sel == i;
+                        for (i, (r, st)) in self.paths_with_stats.iter().enumerate() {
+                            ui.push_id(("path", i), |ui| {
+                                let sel = self.path_sel == i;
                                 let label = format!(
-                                    "{}  +{} -{}",
-                                    s.path, stats.insertions, stats.deletions
+                                    "{}  +{} -{}  ·{}",
+                                    r.path, st.insertions, st.deletions, r.snapshot_count
                                 );
                                 if ui
                                     .selectable_label(
                                         sel,
                                         egui::RichText::new(label)
-                                            .size(12.0)
+                                            .size(11.5)
                                             .family(egui::FontFamily::Monospace)
                                             .color(if sel { TEXT } else { TEXT_DIM }),
                                     )
                                     .clicked()
                                 {
-                                    self.change_sel = i;
+                                    self.path_sel = i;
+                                    self.path_versions_path = None;
                                     self.diff_cache_id = None;
                                 }
                             });
                         }
-                        ui.add_space(14.0);
+                        ui.add_space(12.0);
                         ui.label(
-                            egui::RichText::new(format!("SESSIONS ({})", self.sessions.len()))
-                                .small()
-                                .strong()
-                                .color(ACCENT),
+                            egui::RichText::new(format!(
+                                "VERSIONS ({})",
+                                self.path_snaps.len()
+                            ))
+                            .small()
+                            .strong()
+                            .color(ACCENT),
                         );
                         ui.add_space(6.0);
-                        ui.push_id("all_sessions", |ui| {
-                            let sel = self.session_filter.is_none();
-                            if ui.selectable_label(sel, "All timelines").clicked() {
-                                self.session_filter = None;
-                                self.diff_cache_id = None;
-                            }
-                        });
-                        ui.add_space(4.0);
-                        for s in &self.sessions {
-                            ui.push_id(s.id, |ui| {
-                                let sel = self.session_filter == Some(s.id);
-                                let closed = if s.closed_at.is_some() {
-                                    " · closed"
+                        for (i, s) in self.path_snaps.iter().enumerate() {
+                            ui.push_id(("ver", s.id), |ui| {
+                                let sel = self.snap_sel == i;
+                                let short = short_sha(&s.content_sha256);
+                                let st = self.snap_stats.get(i).copied().flatten();
+                                let label = if let Some(st) = st {
+                                    format!("#{}  {}  +{} -{}", s.id, short, st.insertions, st.deletions)
                                 } else {
-                                    ""
+                                    format!("#{}  {}  (first)", s.id, short)
                                 };
-                                let label = format!("{} [{}]{}", s.title, s.kind, closed);
-                                if ui.selectable_label(sel, label).clicked() {
-                                    self.session_filter = Some(s.id);
+                                if ui
+                                    .selectable_label(
+                                        sel,
+                                        egui::RichText::new(label)
+                                            .size(11.5)
+                                            .family(egui::FontFamily::Monospace)
+                                            .color(if sel { TEXT } else { TEXT_DIM }),
+                                    )
+                                    .clicked()
+                                {
+                                    self.snap_sel = i;
                                     self.diff_cache_id = None;
                                 }
-                            });
-                        }
-                        ui.add_space(14.0);
-                        ui.label(
-                            egui::RichText::new(format!("COMMITS ({})", self.commits.len()))
-                                .small()
-                                .strong()
-                                .color(ACCENT),
-                        );
-                        ui.add_space(6.0);
-                        for (g, st) in &self.commits {
-                            ui.push_id(("cmt", g.snapshot_id), |ui| {
-                                let sha = short_sha(&g.git_commit);
-                                let line = format!(
-                                    "{}  +{} -{}",
-                                    sha, st.insertions, st.deletions
-                                );
-                                ui.label(
-                                    egui::RichText::new(line)
-                                        .size(11.5)
-                                        .family(egui::FontFamily::Monospace)
-                                        .color(TEXT_DIM),
-                                );
                             });
                         }
                     });
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} files  +{} -{}",
-                        self.changes.len(),
+                        "{} tracked files  +{} -{}",
+                        self.paths_with_stats.len(),
                         tot_add,
                         tot_del
                     ))
@@ -602,6 +564,25 @@ impl DiffloomGui {
                                 Some("+"),
                             );
                         }
+                        view::SbsRow::Skipped { unchanged } => {
+                            let w = half * 2.0 + 8.0;
+                            egui::Frame::new()
+                                .fill(HUNK_BAR)
+                                .inner_margin(egui::Margin::symmetric(8, 6))
+                                .show(ui, |ui| {
+                                    ui.set_width(w);
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "· · ·  {unchanged} unchanged lines  · · ·"
+                                            ))
+                                            .small()
+                                            .italics()
+                                            .color(TEXT_DIM),
+                                        );
+                                    });
+                                });
+                        }
                     }
                 });
             });
@@ -610,7 +591,7 @@ impl DiffloomGui {
 
     fn center_column(&mut self, ui: &mut egui::Ui) {
         self.recompute_diff_cache();
-        let snap = self.changes.get(self.change_sel).map(|(s, _)| s);
+        let snap = self.path_snaps.get(self.snap_sel);
         egui::Frame::new()
             .fill(CENTER_BG)
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
@@ -627,19 +608,21 @@ impl DiffloomGui {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        egui::RichText::new(&header)
-                                            .strong()
-                                            .color(TEXT)
-                                            .size(13.5)
-                                            .family(egui::FontFamily::Monospace),
+                                        egui::RichText::new(format!(
+                                            "{}  ·  #{}",
+                                            header, s.id
+                                        ))
+                                        .strong()
+                                        .color(TEXT)
+                                        .size(13.5)
+                                        .family(egui::FontFamily::Monospace),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
                                             ui.menu_button("⋯", |ui| {
                                                 if ui.button("Copy path").clicked() {
-                                                    ui.ctx()
-                                                        .copy_text(s.path.clone());
+                                                    ui.ctx().copy_text(s.path.clone());
                                                     ui.close();
                                                 }
                                             });
@@ -667,7 +650,7 @@ impl DiffloomGui {
                                     );
                                 });
                             });
-                        let diff_h = (ui.available_height() * 0.55).clamp(120.0, 800.0);
+                        let diff_h = (ui.available_height() * 0.72).clamp(140.0, 900.0);
                         egui::ScrollArea::vertical()
                             .id_salt("diffloom_main_sbs")
                             .max_height(diff_h)
@@ -690,7 +673,7 @@ impl DiffloomGui {
                                 .map(|v| v.len())
                                 .unwrap_or(0);
                             let sym_lbl = format!("SYMBOLS ({sym_count})");
-                            for (i, name) in ["SUMMARY", sym_lbl.as_str(), "HISTORY"]
+                            for (i, name) in ["SUMMARY", sym_lbl.as_str()]
                                 .into_iter()
                                 .enumerate()
                             {
@@ -699,7 +682,7 @@ impl DiffloomGui {
                                 let text_color = if sel { ACCENT } else { TEXT_DIM };
                                 if ui
                                     .add_sized(
-                                        [100.0, 28.0],
+                                        [110.0, 28.0],
                                         egui::Button::new(
                                             egui::RichText::new(name)
                                                 .small()
@@ -733,21 +716,8 @@ impl DiffloomGui {
                                                 .color(TEXT)
                                                 .line_height(Some(20.0)),
                                         );
-                                        if let Some(sid) = self.session_filter {
-                                            if let Some(sess) =
-                                                self.sessions.iter().find(|x| x.id == sid)
-                                            {
-                                                ui.add_space(8.0);
-                                                ui.label(
-                                                    egui::RichText::new(&sess.title)
-                                                        .small()
-                                                        .strong()
-                                                        .color(ACCENT),
-                                                );
-                                            }
-                                        }
                                     }
-                                    1 => {
+                                    _ => {
                                         let rows = db::load_symbol_changes(&self.conn, s.id)
                                             .unwrap_or_default();
                                         if rows.is_empty() {
@@ -768,45 +738,12 @@ impl DiffloomGui {
                                             }
                                         }
                                     }
-                                    _ => {
-                                        let path = s.path.clone();
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "Snapshots for `{path}`"
-                                            ))
-                                            .small()
-                                            .color(TEXT_DIM),
-                                        );
-                                        ui.add_space(6.0);
-                                        for row in db::list_snapshots_for_path(
-                                            &self.conn,
-                                            &path,
-                                            40,
-                                        )
-                                        .unwrap_or_default()
-                                        {
-                                            ui.push_id(("hist", row.id), |ui| {
-                                                let short = short_sha(&row.content_sha256);
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "#{}  {}  {}",
-                                                        row.id, short, row.created_at
-                                                    ))
-                                                    .family(egui::FontFamily::Monospace)
-                                                    .size(11.0)
-                                                    .color(TEXT_DIM),
-                                                );
-                                            });
-                                        }
-                                    }
                                 }
                             });
                     } else {
                         ui.label(
-                            egui::RichText::new(
-                                "No comparable snapshots yet (need a prior version of a file).",
-                            )
-                            .color(TEXT_DIM),
+                            egui::RichText::new("Pick a file with history to inspect versions.")
+                                .color(TEXT_DIM),
                         );
                     }
                 });
@@ -814,22 +751,27 @@ impl DiffloomGui {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        if !self.changes.is_empty() {
-            let n = self.changes.len();
+        if !self.paths_with_stats.is_empty() {
+            let n = self.paths_with_stats.len();
             if ctx.input(|i| i.key_pressed(egui::Key::J)) {
-                self.change_sel = (self.change_sel + 1).min(n - 1);
+                self.path_sel = (self.path_sel + 1).min(n - 1);
+                self.path_versions_path = None;
                 self.diff_cache_id = None;
             }
             if ctx.input(|i| i.key_pressed(egui::Key::K)) {
-                self.change_sel = self.change_sel.saturating_sub(1);
+                self.path_sel = self.path_sel.saturating_sub(1);
+                self.path_versions_path = None;
                 self.diff_cache_id = None;
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-                self.change_sel = (self.change_sel + 1).min(n - 1);
+        }
+        if self.path_snaps.len() > 1 {
+            let m = self.path_snaps.len();
+            if ctx.input(|i| i.key_pressed(egui::Key::OpenBracket)) {
+                self.snap_sel = (self.snap_sel + 1).min(m - 1);
                 self.diff_cache_id = None;
             }
-            if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-                self.change_sel = self.change_sel.saturating_sub(1);
+            if ctx.input(|i| i.key_pressed(egui::Key::CloseBracket)) {
+                self.snap_sel = self.snap_sel.saturating_sub(1);
                 self.diff_cache_id = None;
             }
         }
@@ -838,9 +780,6 @@ impl DiffloomGui {
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
             self.bottom_tab = 1;
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Num3)) {
-            self.bottom_tab = 2;
         }
     }
 }
@@ -862,12 +801,7 @@ impl eframe::App for DiffloomGui {
                 ui.set_min_height(body_h);
                 ui.set_max_height(body_h);
                 ui.vertical(|ui| {
-                    ui.set_width(44.0);
-                    ui.set_min_height(body_h);
-                    self.icon_rail(ui);
-                });
-                ui.vertical(|ui| {
-                    ui.set_width(272.0);
+                    ui.set_width(300.0);
                     ui.set_min_height(body_h);
                     self.sidebar(ui);
                 });
@@ -930,12 +864,13 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         file_rx,
         _debouncer: debouncer,
         sessions: vec![],
-        snaps: vec![],
-        changes: vec![],
-        commits: vec![],
+        paths_with_stats: vec![],
+        path_sel: 0,
+        path_versions_path: None,
+        path_snaps: vec![],
+        snap_stats: vec![],
+        snap_sel: 0,
         session_filter: None,
-        change_sel: 0,
-        rail_tab: 0,
         search: String::new(),
         bottom_tab: 0,
         diff_cache_id: None,
