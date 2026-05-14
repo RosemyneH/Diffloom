@@ -1,0 +1,34 @@
+[package]
+name = "diffloom"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "diffloom"
+path = "src/lib.rs"
+
+[[bin]]
+name = "diffloom"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
+crossterm = "0.29.0"
+git2 = { version = "0.20.4", features = ["vendored-libgit2"] }
+hex = "0.4.3"
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
+ratatui = "0.30.0"
+rmcp = { version = "1.7.0", features = ["server", "transport-io", "macros"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+schemars = { version = "1.2.1", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+sha2 = "0.10.9"
+similar = "2.7.0"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "io-std"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tree-sitter = "0.26.8"
+tree-sitter-rust = "0.24.2"
