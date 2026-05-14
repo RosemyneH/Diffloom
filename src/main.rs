@@ -6,14 +6,14 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "diffloom",
-    about = "Save timeline, symbols, and MCP review bridge"
+    about = "Standalone workspace timeline and symbol watcher (per-project data under .diffloom/)"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Cmd>,
     #[arg(
         long,
-        help = "Workspace directory for the TUI (defaults to the current directory)"
+        help = "Project directory to watch (saved for next launch if omitted)"
     )]
     root: Option<std::path::PathBuf>,
 }
@@ -42,10 +42,16 @@ fn main() -> anyhow::Result<()> {
                     "TUI needs an interactive terminal. Open a real terminal, or run `diffloom mcp` for stdio MCP mode."
                 );
             }
-            let root = cli
-                .root
-                .or_else(|| std::env::current_dir().ok())
-                .context("set --root or run from a directory you can use as the workspace")?;
+            let root = if let Some(p) = cli.root {
+                p
+            } else if let Some(p) = diffloom::app_state::load_last_workspace()? {
+                p
+            } else {
+                diffloom::app_state::prompt_workspace()?
+            };
+            let root = diffloom::paths::normalize_path(&root)
+                .with_context(|| format!("workspace {}", root.display()))?;
+            diffloom::app_state::save_last_workspace(&root)?;
             diffloom::tui::run(root)?;
         }
     }

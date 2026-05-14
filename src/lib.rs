@@ -1,3 +1,4 @@
+pub mod app_state;
 pub mod db;
 pub mod git_info;
 pub mod ingest;
