@@ -44,6 +44,9 @@ const DIFF_ROW_H: f32 = 14.0;
 const CODE_FONT: f32 = 11.0;
 const GUTTER_FONT: f32 = 9.5;
 const SIDEBAR_W: f32 = 208.0;
+const RAIL_SLIM_W: f32 = 38.0;
+const RAIL_VIEWPORT_NARROW: f32 = 780.0;
+const RAIL_VIEWPORT_WIDE: f32 = 920.0;
 const SIDEBAR_PATH_ROW_H: f32 = 36.0;
 const SIDEBAR_SNAP_ROW_H: f32 = 36.0;
 const DIFF_SBS_MIN_HALF: f32 = 268.0;
@@ -73,6 +76,8 @@ struct DiffloomGui {
     sbs_stats: view::DiffLineStats,
     diff_row_sel: Option<usize>,
     paths_scan_key: String,
+    rail_collapsed: bool,
+    rail_force_expanded: bool,
 }
 
 fn project_label(root: &std::path::Path) -> String {
@@ -206,7 +211,26 @@ impl DiffloomGui {
             .fold((0u32, 0u32), |(a, d), (_, s)| (a + s.insertions, d + s.deletions))
     }
 
-    fn top_bar(&mut self, ui: &mut egui::Ui) {
+    fn update_rail_for_viewport(&mut self, viewport_w: f32) {
+        if viewport_w >= RAIL_VIEWPORT_WIDE {
+            self.rail_force_expanded = false;
+            self.rail_collapsed = false;
+        } else if viewport_w < RAIL_VIEWPORT_NARROW && !self.rail_force_expanded {
+            self.rail_collapsed = true;
+        }
+    }
+
+    fn rail_set_expanded(&mut self, expanded: bool, viewport_w: f32) {
+        self.rail_collapsed = !expanded;
+        if expanded && viewport_w < RAIL_VIEWPORT_NARROW {
+            self.rail_force_expanded = true;
+        }
+        if !expanded {
+            self.rail_force_expanded = false;
+        }
+    }
+
+    fn top_bar(&mut self, ui: &mut egui::Ui, viewport_w: f32) {
         let branch = git_info::current_branch(&self.root)
             .unwrap_or_else(|| "detached".to_string());
         let proj = project_label(&self.root);
@@ -219,6 +243,25 @@ impl DiffloomGui {
                 let left_w = 190.0_f32;
                 let mid = (full - left_w - 16.0).max(120.0);
                 ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(if self.rail_collapsed {
+                                "▶"
+                            } else {
+                                "◀"
+                            }))
+                            .min_size(egui::vec2(28.0, ui.spacing().interact_size.y)),
+                        )
+                        .on_hover_text(if self.rail_collapsed {
+                            "Show file and version list"
+                        } else {
+                            "Hide sidebar (more space for diff)"
+                        })
+                        .clicked()
+                    {
+                        self.rail_set_expanded(self.rail_collapsed, viewport_w);
+                    }
+                    ui.add_space(4.0);
                     ui.allocate_ui_with_layout(
                         egui::vec2(left_w, ui.spacing().interact_size.y),
                         egui::Layout::left_to_right(egui::Align::Center),
@@ -301,13 +344,23 @@ impl DiffloomGui {
             });
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn sidebar(&mut self, ui: &mut egui::Ui, viewport_w: f32) {
         let (tot_add, tot_del) = self.totals_footer();
         egui::Frame::new()
             .fill(RAIL)
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
             .inner_margin(egui::Margin::symmetric(6, 6))
             .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .small_button("◀")
+                        .on_hover_text("Collapse sidebar")
+                        .clicked()
+                    {
+                        self.rail_set_expanded(false, viewport_w);
+                    }
+                });
+                ui.add_space(3.0);
                 egui::ComboBox::from_id_salt("diffloom_scope")
                     .width(ui.available_width())
                     .selected_text(match self.session_filter {
@@ -592,6 +645,123 @@ impl DiffloomGui {
                     .small()
                     .color(TEXT_DIM),
                 );
+            });
+    }
+
+    fn sidebar_slim(&mut self, ui: &mut egui::Ui, viewport_w: f32) {
+        let (tot_add, tot_del) = self.totals_footer();
+        egui::Frame::new()
+            .fill(RAIL)
+            .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
+            .inner_margin(egui::Margin::symmetric(2, 5))
+            .show(ui, |ui| {
+                ui.set_width(RAIL_SLIM_W);
+                ui.vertical(|ui| {
+                    if ui
+                        .add_sized(
+                            [RAIL_SLIM_W - 2.0, 22.0],
+                            egui::Button::new(egui::RichText::new("▶").color(ACCENT)),
+                        )
+                        .on_hover_text("Expand file list")
+                        .clicked()
+                    {
+                        self.rail_set_expanded(true, viewport_w);
+                    }
+                    let scroll_h = (ui.available_height() - 28.0).max(64.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("diffloom_slim_scroll")
+                        .max_height(scroll_h)
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(
+                                egui::RichText::new("F")
+                                    .small()
+                                    .strong()
+                                    .color(ACCENT_DIM),
+                            );
+                            for (i, (r, _st)) in self.paths_with_stats.iter().enumerate() {
+                                ui.push_id(("slim_path", i), |ui| {
+                                    let sel = self.path_sel == i;
+                                    let h = 22.0_f32;
+                                    let pos = ui.cursor().min;
+                                    let fill = if sel { TAB_ACTIVE } else { egui::Color32::TRANSPARENT };
+                                    egui::Frame::new()
+                                        .fill(fill)
+                                        .inner_margin(egui::Margin::same(0))
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.set_height(h);
+                                            ui.vertical_centered(|ui| {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(file_glyph(&r.path))
+                                                            .size(13.0),
+                                                    )
+                                                    .selectable(false),
+                                                );
+                                            });
+                                        });
+                                    let row_rect =
+                                        egui::Rect::from_min_size(pos, egui::vec2(RAIL_SLIM_W, h));
+                                    let hit = ui.interact(
+                                        row_rect,
+                                        ui.id().with("slim_path_hit"),
+                                        egui::Sense::click(),
+                                    );
+                                    if hit.clicked() {
+                                        self.path_sel = i;
+                                        self.path_versions_path = None;
+                                        self.diff_cache_id = None;
+                                    }
+                                });
+                            }
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new("V")
+                                    .small()
+                                    .strong()
+                                    .color(ACCENT_DIM),
+                            );
+                            for (i, s) in self.path_snaps.iter().enumerate() {
+                                ui.push_id(("slim_ver", s.id), |ui| {
+                                    let sel = self.snap_sel == i;
+                                    let h = 17.0_f32;
+                                    let pos = ui.cursor().min;
+                                    let fill = if sel { TAB_ACTIVE } else { egui::Color32::TRANSPARENT };
+                                    let t = egui::RichText::new(format!("{}", s.id))
+                                        .family(egui::FontFamily::Monospace)
+                                        .size(9.0)
+                                        .color(if sel { TEXT } else { TEXT_DIM });
+                                    egui::Frame::new()
+                                        .fill(fill)
+                                        .show(ui, |ui| {
+                                            ui.set_width(ui.available_width());
+                                            ui.set_height(h);
+                                            ui.vertical_centered(|ui| {
+                                                ui.add(egui::Label::new(t).selectable(false));
+                                            });
+                                        });
+                                    let row_rect =
+                                        egui::Rect::from_min_size(pos, egui::vec2(RAIL_SLIM_W, h));
+                                    let hit = ui.interact(
+                                        row_rect,
+                                        ui.id().with("slim_ver_hit"),
+                                        egui::Sense::click(),
+                                    );
+                                    if hit.clicked() {
+                                        self.snap_sel = i;
+                                        self.diff_cache_id = None;
+                                    }
+                                });
+                            }
+                        });
+                    ui.label(
+                        egui::RichText::new(format!("+{tot_add} -{tot_del}"))
+                            .size(8.0)
+                            .color(TEXT_DIM),
+                    );
+                });
             });
     }
 
@@ -1292,16 +1462,28 @@ impl eframe::App for DiffloomGui {
 
         ui.visuals_mut().override_text_color = Some(TEXT);
 
+        let viewport_w = ui.max_rect().width();
+        self.update_rail_for_viewport(viewport_w);
+
         ui.vertical(|ui| {
-            self.top_bar(ui);
+            self.top_bar(ui, viewport_w);
             let body_h = (ui.available_height() - 32.0).max(160.0);
+            let rail_w = if self.rail_collapsed {
+                RAIL_SLIM_W
+            } else {
+                SIDEBAR_W
+            };
             ui.horizontal(|ui| {
                 ui.set_min_height(body_h);
                 ui.set_max_height(body_h);
                 ui.vertical(|ui| {
-                    ui.set_width(SIDEBAR_W);
+                    ui.set_width(rail_w);
                     ui.set_min_height(body_h);
-                    self.sidebar(ui);
+                    if self.rail_collapsed {
+                        self.sidebar_slim(ui, viewport_w);
+                    } else {
+                        self.sidebar(ui, viewport_w);
+                    }
                 });
                 ui.add_space(4.0);
                 ui.vertical(|ui| {
@@ -1378,6 +1560,8 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         sbs_stats: view::DiffLineStats::default(),
         diff_row_sel: None,
         paths_scan_key: String::new(),
+        rail_collapsed: false,
+        rail_force_expanded: false,
     };
 
     eframe::run_native(
