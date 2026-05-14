@@ -81,6 +81,13 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             prev_snapshot_id INTEGER REFERENCES snapshots(id)
         );
         CREATE INDEX IF NOT EXISTS idx_symbol_changes_snapshot ON symbol_changes(snapshot_id);
+
+        CREATE TABLE IF NOT EXISTS snapshot_llm_reviews (
+            snapshot_id INTEGER PRIMARY KEY REFERENCES snapshots(id) ON DELETE CASCADE,
+            model TEXT NOT NULL,
+            body TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         ",
     )?;
     Ok(())
@@ -375,6 +382,36 @@ pub fn snapshot_summary(conn: &Connection, id: i64) -> rusqlite::Result<Option<S
         |r| r.get(0),
     )
     .optional()
+}
+
+pub fn llm_review_get(
+    conn: &Connection,
+    snapshot_id: i64,
+) -> rusqlite::Result<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT model, body FROM snapshot_llm_reviews WHERE snapshot_id = ?1",
+        [snapshot_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+}
+
+pub fn llm_review_save(
+    conn: &Connection,
+    snapshot_id: i64,
+    model: &str,
+    body: &str,
+    updated_at: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO snapshot_llm_reviews (snapshot_id, model, body, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(snapshot_id) DO UPDATE SET
+           model = excluded.model,
+           body = excluded.body,
+           updated_at = excluded.updated_at",
+        params![snapshot_id, model, body, updated_at],
+    )?;
+    Ok(())
 }
 
 pub fn open_db(workspace_root: &Path) -> anyhow::Result<Connection> {

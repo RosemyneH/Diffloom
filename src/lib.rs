@@ -3,6 +3,7 @@ pub mod db;
 pub mod git_info;
 pub mod gui;
 pub mod ingest;
+pub mod llm_review;
 pub mod mcp_server;
 pub mod paths;
 pub mod rust_parse;

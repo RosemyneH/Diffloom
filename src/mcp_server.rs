@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router, ServiceExt};
 use serde::Deserialize;
 
-use crate::{db, view};
+use crate::{db, llm_review, view};
 
 #[derive(Default)]
 struct McpInner {
@@ -274,6 +274,64 @@ impl DiffloomMcp {
             return format!("error: {e}");
         }
         "ok".into()
+    }
+
+    #[tool(description = "Read stored local-LLM change review for a snapshot (if any)")]
+    fn llm_review_get(
+        &self,
+        Parameters(SnapshotIdParams { snapshot_id }): Parameters<SnapshotIdParams>,
+    ) -> String {
+        let g = self.inner.lock().unwrap();
+        let Some(conn) = g.conn.as_ref() else {
+            return "error: call open_workspace first".into();
+        };
+        match db::llm_review_get(conn, snapshot_id) {
+            Ok(Some((model, body))) => format!("model={model}\n\n{body}"),
+            Ok(None) => "(none)".into(),
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    #[tool(
+        description = "Run local LLM review on snapshot unified diff (Ollama /api/generate); needs DIFFLOOM_LLM=1 or DIFFLOOM_LLM_URL; saves result"
+    )]
+    fn llm_review_run(
+        &self,
+        Parameters(SnapshotIdParams { snapshot_id }): Parameters<SnapshotIdParams>,
+    ) -> String {
+        if !llm_review::is_enabled() {
+            return "error: set DIFFLOOM_LLM=1 or DIFFLOOM_LLM_URL".into();
+        }
+        let (path, diff) = {
+            let g = self.inner.lock().unwrap();
+            let Some(conn) = g.conn.as_ref() else {
+                return "error: call open_workspace first".into();
+            };
+            let path = match db::snapshot_path(conn, snapshot_id) {
+                Ok(Some(p)) => p,
+                Ok(None) => return "error: no snapshot".into(),
+                Err(e) => return format!("error: {e}"),
+            };
+            let diff = match view::unified_diff_for_snapshot(conn, snapshot_id) {
+                Ok(s) => s,
+                Err(e) => return format!("error: diff {e:#}"),
+            };
+            (path, diff)
+        };
+        let cfg = llm_review::load_config();
+        let body = match llm_review::run_review(&cfg, &path, &diff) {
+            Ok(t) => t,
+            Err(e) => return format!("error: {e:#}"),
+        };
+        let mut g = self.inner.lock().unwrap();
+        let Some(conn) = g.conn.as_mut() else {
+            return "error: call open_workspace first".into();
+        };
+        let now = now_ms();
+        if let Err(e) = db::llm_review_save(conn, snapshot_id, &cfg.model, &body, now) {
+            return format!("error: save {e}");
+        }
+        body
     }
 }
 

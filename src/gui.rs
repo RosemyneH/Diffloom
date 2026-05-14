@@ -8,7 +8,7 @@ use eframe::egui;
 use notify::RecommendedWatcher;
 use notify_debouncer_mini::Debouncer;
 
-use crate::{app_state, db, git_info, ingest, paths, view, watcher};
+use crate::{app_state, db, git_info, ingest, llm_review, paths, view, watcher};
 
 const CANVAS: egui::Color32 = egui::Color32::from_rgb(11, 12, 16);
 const TOPBAR: egui::Color32 = egui::Color32::from_rgb(18, 19, 26);
@@ -81,6 +81,8 @@ struct DiffloomGui {
     rail_force_expanded: bool,
     read_paths: HashSet<String>,
     workspace_err: Option<String>,
+    llm_done_rx: Option<std::sync::mpsc::Receiver<()>>,
+    llm_busy_snap: Option<i64>,
 }
 
 fn project_label(root: &std::path::Path) -> String {
@@ -258,6 +260,52 @@ impl DiffloomGui {
         self.paths_scan_key.clear();
         self.rail_collapsed = false;
         self.rail_force_expanded = false;
+        self.llm_done_rx = None;
+        self.llm_busy_snap = None;
+    }
+
+    fn poll_llm_done(&mut self, ctx: &egui::Context) {
+        let mut cleared = false;
+        if let Some(rx) = &self.llm_done_rx {
+            while rx.try_recv().is_ok() {
+                cleared = true;
+            }
+        }
+        if cleared {
+            self.llm_busy_snap = None;
+            ctx.request_repaint();
+        }
+    }
+
+    fn spawn_llm_review(&mut self, snap_id: i64, path: String, ctx: &egui::Context) {
+        if self.llm_busy_snap.is_some() {
+            return;
+        }
+        if !llm_review::is_enabled() {
+            return;
+        }
+        let root = self.root.clone();
+        let cfg = llm_review::load_config();
+        let diff = match view::unified_diff_for_snapshot(&self.conn, snap_id) {
+            Ok(d) => d,
+            Err(e) => format!("(could not build unified diff)\n{e:#}\n"),
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.llm_done_rx = Some(rx);
+        self.llm_busy_snap = Some(snap_id);
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let body = match llm_review::run_review(&cfg, &path, &diff) {
+                Ok(t) => t,
+                Err(e) => format!("(local LLM request failed)\n\n{e:#}"),
+            };
+            let now = llm_review::unix_ms();
+            if let Ok(conn) = db::open_db(&root) {
+                let _ = db::llm_review_save(&conn, snap_id, &cfg.model, &body, now);
+            }
+            let _ = tx.send(());
+            ctx.request_repaint();
+        });
     }
 
     fn switch_workspace(&mut self, new_root: PathBuf) -> anyhow::Result<()> {
@@ -434,9 +482,14 @@ impl DiffloomGui {
                                 .small()
                                 .color(TEXT_DIM),
                         );
-                        ui.label(egui::RichText::new("1 · 2").strong().color(ACCENT).small());
                         ui.label(
-                            egui::RichText::new("summary / symbols")
+                            egui::RichText::new("1 · 2 · 3")
+                                .strong()
+                                .color(ACCENT)
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new("summary / symbols / LLM")
                                 .small()
                                 .color(TEXT_DIM),
                         );
@@ -952,6 +1005,7 @@ impl DiffloomGui {
         h.max(DIFF_ROW_H)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_sbs_cell(
         ui: &mut egui::Ui,
         width: f32,
@@ -1032,6 +1086,7 @@ impl DiffloomGui {
             });
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn paint_insert_only_cell(
         ui: &mut egui::Ui,
         row_h: f32,
@@ -1303,7 +1358,7 @@ impl DiffloomGui {
     }
 
     fn center_column(&mut self, ui: &mut egui::Ui) {
-        let snap = self.path_snaps.get(self.snap_sel);
+        let snap = self.path_snaps.get(self.snap_sel).cloned();
         egui::Frame::new()
             .fill(CENTER_BG)
             .stroke(egui::Stroke::new(1.0, RAIL_EDGE))
@@ -1311,7 +1366,7 @@ impl DiffloomGui {
             .inner_margin(egui::Margin::same(0))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    if let Some(s) = snap {
+                    if let Some(s) = &snap {
                         let st = self.sbs_stats;
                         let insert_only = Self::use_insert_only_layout(&st, &self.sbs_rows);
                         let header = s.path.clone();
@@ -1416,7 +1471,7 @@ impl DiffloomGui {
                                 .map(|v| v.len())
                                 .unwrap_or(0);
                             let sym_lbl = format!("SYMBOLS ({sym_count})");
-                            for (i, name) in ["SUMMARY", sym_lbl.as_str()].into_iter().enumerate() {
+                            for (i, name) in ["SUMMARY", sym_lbl.as_str(), "LLM"].into_iter().enumerate() {
                                 let sel = self.bottom_tab == i;
                                 let fill = if sel {
                                     TAB_ACTIVE
@@ -1426,7 +1481,7 @@ impl DiffloomGui {
                                 let text_color = if sel { ACCENT } else { TEXT_DIM };
                                 if ui
                                     .add_sized(
-                                        [96.0, 24.0],
+                                        [84.0, 24.0],
                                         egui::Button::new(
                                             egui::RichText::new(name)
                                                 .small()
@@ -1460,7 +1515,7 @@ impl DiffloomGui {
                                             .line_height(Some(18.0)),
                                     );
                                 }
-                                _ => {
+                                1 => {
                                     let rows = db::load_symbol_changes(&self.conn, s.id)
                                         .unwrap_or_default();
                                     if rows.is_empty() {
@@ -1478,6 +1533,75 @@ impl DiffloomGui {
                                             );
                                         }
                                     }
+                                }
+                                _ => {
+                                    let busy = self.llm_busy_snap == Some(s.id);
+                                    ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            let enabled = llm_review::is_enabled() && !busy;
+                                            if ui
+                                                .add_enabled(
+                                                    enabled,
+                                                    egui::Button::new(
+                                                        egui::RichText::new("Run local LLM review")
+                                                            .small()
+                                                            .strong(),
+                                                    )
+                                                    .min_size(egui::vec2(160.0, 22.0)),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.spawn_llm_review(s.id, s.path.clone(), ui.ctx());
+                                            }
+                                            if busy {
+                                                ui.label(
+                                                    egui::RichText::new("…")
+                                                        .strong()
+                                                        .color(ACCENT),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new("waiting for model")
+                                                        .small()
+                                                        .color(TEXT_DIM),
+                                                );
+                                            }
+                                        });
+                                        if !llm_review::is_enabled() {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "Enable with DIFFLOOM_LLM=1 or set DIFFLOOM_LLM_URL. Defaults: http://127.0.0.1:11434/api/generate and model llama3.2 (DIFFLOOM_LLM_MODEL). Set DIFFLOOM_LLM_AFTER_INGEST=1 to scan each new snapshot in the background.",
+                                                )
+                                                .small()
+                                                .color(TEXT_DIM)
+                                                .line_height(Some(16.0)),
+                                            );
+                                        }
+                                        if let Ok(Some((model, body))) =
+                                            db::llm_review_get(&self.conn, s.id)
+                                        {
+                                            ui.add_space(6.0);
+                                            ui.label(
+                                                egui::RichText::new(format!("model: {model}"))
+                                                    .small()
+                                                    .color(TEXT_DIM),
+                                            );
+                                            ui.add_space(4.0);
+                                            ui.label(
+                                                egui::RichText::new(body)
+                                                    .size(12.0)
+                                                    .color(TEXT)
+                                                    .line_height(Some(18.0)),
+                                            );
+                                        } else if llm_review::is_enabled() && !busy {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "No stored review for this snapshot yet.",
+                                                )
+                                                .small()
+                                                .color(TEXT_DIM),
+                                            );
+                                        }
+                                    });
                                 }
                             });
                     } else {
@@ -1615,6 +1739,9 @@ impl DiffloomGui {
         if ctx.input(|i| i.key_pressed(egui::Key::Num2)) {
             self.bottom_tab = 1;
         }
+        if ctx.input(|i| i.key_pressed(egui::Key::Num3)) {
+            self.bottom_tab = 2;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::R)) {
             self.copy_diff_clipboard(ctx);
         }
@@ -1629,6 +1756,7 @@ impl DiffloomGui {
 
 impl eframe::App for DiffloomGui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_llm_done(ui.ctx());
         let mut ingested = false;
         while let Ok(p) = self.file_rx.try_recv() {
             ingested = true;
@@ -1746,6 +1874,8 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         rail_force_expanded: false,
         read_paths,
         workspace_err: None,
+        llm_done_rx: None,
+        llm_busy_snap: None,
     };
 
     eframe::run_native(

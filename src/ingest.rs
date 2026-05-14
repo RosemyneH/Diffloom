@@ -149,5 +149,24 @@ pub fn ingest_path(
         )?;
     }
     tx.commit()?;
+    if crate::llm_review::should_scan_after_ingest() {
+        let root = root.to_path_buf();
+        let sid = snapshot_id;
+        let p = path_str.clone();
+        std::thread::spawn(move || {
+            let Ok(conn) = db::open_db(&root) else {
+                return;
+            };
+            let diff = crate::view::unified_diff_for_snapshot(&conn, sid)
+                .unwrap_or_else(|e| format!("(could not build unified diff)\n{e:#}\n"));
+            let cfg = crate::llm_review::load_config();
+            let body = match crate::llm_review::run_review(&cfg, &p, &diff) {
+                Ok(t) => t,
+                Err(e) => format!("(local LLM request failed)\n\n{e:#}"),
+            };
+            let now = crate::llm_review::unix_ms();
+            let _ = db::llm_review_save(&conn, sid, &cfg.model, &body, now);
+        });
+    }
     Ok(true)
 }

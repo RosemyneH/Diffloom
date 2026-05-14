@@ -50,13 +50,14 @@ fn snapshots_queries_empty_then_rows() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    assert!(db::last_snapshot_for_path(&conn, "src/a.rs").unwrap().is_none());
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    assert!(db::last_snapshot_for_path(&conn, "src/a.rs")
+        .unwrap()
+        .is_none());
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid: i64 = conn.last_insert_rowid();
     conn
         .execute(
@@ -75,7 +76,9 @@ fn snapshots_queries_empty_then_rows() {
         .unwrap();
     let id2 = conn.last_insert_rowid();
     assert!(id2 > id1);
-    let last = db::last_snapshot_for_path(&conn, "p/a.rs").unwrap().unwrap();
+    let last = db::last_snapshot_for_path(&conn, "p/a.rs")
+        .unwrap()
+        .unwrap();
     assert_eq!(last.0, id2);
     assert_eq!(last.1, "def");
     let prev = db::previous_snapshot_id(&conn, "p/a.rs", id2).unwrap();
@@ -90,19 +93,17 @@ fn list_sessions_orders_newest_first() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('a', 'x', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('a', 'x', 1)",
+        [],
+    )
+    .unwrap();
     let id_a = conn.last_insert_rowid();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('b', 'y', 2)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('b', 'y', 2)",
+        [],
+    )
+    .unwrap();
     let id_b = conn.last_insert_rowid();
     let rows: Vec<SessionRow> = db::list_sessions(&conn, 10).unwrap();
     assert_eq!(rows.len(), 2);
@@ -116,12 +117,11 @@ fn snapshot_body_roundtrip() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     conn
         .execute(
@@ -131,12 +131,11 @@ fn snapshot_body_roundtrip() {
         )
         .unwrap();
     let snap = conn.last_insert_rowid();
-    conn
-        .execute(
-            "INSERT INTO snapshot_bodies (snapshot_id, content) VALUES (?1, x'0102')",
-            [snap],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO snapshot_bodies (snapshot_id, content) VALUES (?1, x'0102')",
+        [snap],
+    )
+    .unwrap();
     let body = db::snapshot_body(&conn, snap).unwrap().unwrap();
     assert_eq!(body, vec![1u8, 2u8]);
 }
@@ -146,12 +145,11 @@ fn symbols_load_roundtrip() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     conn
         .execute(
@@ -161,13 +159,12 @@ fn symbols_load_roundtrip() {
         )
         .unwrap();
     let snap = conn.last_insert_rowid();
-    conn
-        .execute(
-            "INSERT INTO symbols (snapshot_id, kind, name, fq_name, start_byte, end_byte)
+    conn.execute(
+        "INSERT INTO symbols (snapshot_id, kind, name, fq_name, start_byte, end_byte)
              VALUES (?1, 'fn', 'foo', 'foo', 0, 3)",
-            [snap],
-        )
-        .unwrap();
+        [snap],
+    )
+    .unwrap();
     let syms = db::load_symbols(&conn, snap).unwrap();
     assert_eq!(syms.len(), 1);
     assert_eq!(syms[0].name, "foo");
@@ -179,12 +176,11 @@ fn snapshot_path_and_summary_helpers() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     conn
         .execute(
@@ -215,12 +211,11 @@ fn list_snapshots_for_path_orders_newest_first() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     for (sha, ts) in [("aaa", 1i64), ("bbb", 2), ("ccc", 3)] {
         conn.execute(
@@ -241,12 +236,11 @@ fn list_commit_groups_dedupes_by_commit() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_commit, git_dirty)
@@ -280,12 +274,11 @@ fn list_paths_by_scope_all_sessions_lists_single_snapshot_paths() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
@@ -315,12 +308,11 @@ fn list_paths_by_scope_session_lists_single_snapshot_paths() {
     let mut conn = Connection::open_in_memory().unwrap();
     db::configure(&mut conn).unwrap();
     db::migrate(&conn).unwrap();
-    conn
-        .execute(
-            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
-            [],
-        )
-        .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
     let sid = conn.last_insert_rowid();
     conn.execute(
         "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
@@ -331,4 +323,28 @@ fn list_paths_by_scope_session_lists_single_snapshot_paths() {
     let paths = db::list_paths_by_scope(&conn, Some(sid), 20).unwrap();
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0].snapshot_count, 1);
+}
+
+#[test]
+fn llm_review_roundtrip() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    db::configure(&mut conn).unwrap();
+    db::migrate(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+        [],
+    )
+    .unwrap();
+    let sid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
+         VALUES (?1, 'x.rs', 0, 'a', 1, 1, 0)",
+        [sid],
+    )
+    .unwrap();
+    let snap = conn.last_insert_rowid();
+    db::llm_review_save(&conn, snap, "m", "bugs: none", 42).unwrap();
+    let got = db::llm_review_get(&conn, snap).unwrap().unwrap();
+    assert_eq!(got.0, "m");
+    assert_eq!(got.1, "bugs: none");
 }
