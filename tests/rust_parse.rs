@@ -88,7 +88,9 @@ fn diff_symbol_maps_fq_name_fallback_on_prev() {
         end_byte: 1,
     }];
     let d = diff_symbol_maps(&prev, &cur);
-    assert!(d.iter().any(|(c, n, _)| *c == SymChange::Removed && n == "S"));
+    assert!(d
+        .iter()
+        .any(|(c, n, _)| *c == SymChange::Removed && n == "S"));
     assert!(d.iter().any(|(c, n, _)| *c == SymChange::Added && n == "S"));
 }
 

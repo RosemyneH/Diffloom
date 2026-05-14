@@ -1,5 +1,7 @@
 # Diffloom
 
+[![CI](https://github.com/diffloom/diffloom/actions/workflows/ci.yml/badge.svg)](https://github.com/diffloom/diffloom/actions/workflows/ci.yml)
+
 Diffloom is a **workspace timeline** for your repo: it watches files, records **snapshots** when content changes, and groups work into **sessions** (for example AI-assisted edits, refactors, or bug hunts). State lives in `.diffloom/db.sqlite` at the project root.
 
 ## Why it belongs in a heavy agentic toolkit
@@ -40,3 +42,14 @@ The binary is `target/release/diffloom`.
 4. Inspect timelines in the UI, or pull **diffs / symbols / summaries** through MCP when building agent workflows or post-mortems.
 
 Diffloom does not replace version control; it **complements** it for the messy middle where agents iterate fast and you still need a clear trail.
+
+## Community and policy
+
+- [Contributing](CONTRIBUTING.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Security](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

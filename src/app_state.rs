@@ -104,11 +104,7 @@ mod tests {
     fn load_ignores_missing_workspace_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let sp = state_path(tmp.path());
-        write_state(
-            &sp,
-            Path::new("/nonexistent/diffloom_test_workspace_xyz"),
-        )
-        .unwrap();
+        write_state(&sp, Path::new("/nonexistent/diffloom_test_workspace_xyz")).unwrap();
         assert!(read_state(&sp).unwrap().is_none());
     }
 }

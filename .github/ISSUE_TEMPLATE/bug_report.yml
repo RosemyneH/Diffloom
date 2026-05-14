@@ -1,0 +1,57 @@
+name: Bug report
+description: File a bug report with enough detail to reproduce the problem.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for crashes, wrong behavior, or broken workflows.
+        For security issues, use [private security reporting](https://github.com/diffloom/diffloom/security) per [SECURITY.md](../../SECURITY.md), not a public issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `diffloom --root /path/to/repo` (or `diffloom tui` / `diffloom mcp`)
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or git commit
+      placeholder: e.g. 0.1.0, or `git rev-parse --short HEAD`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS and environment
+      placeholder: e.g. Fedora 42, macOS 15, Windows 11 + WSL2
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or MCP transcript
+      description: Paste relevant output. Redact secrets, tokens, and private paths if needed.
