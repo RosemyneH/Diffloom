@@ -8,7 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::DefaultTerminal;
 
-use crate::{db, ingest, watcher};
+use crate::{db, ingest, view, watcher};
 
 #[derive(Copy, Clone)]
 enum Focus {
@@ -53,7 +53,7 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
                     sess_state.select(Some(sessions.len() - 1));
                 }
             }
-            let detail = selected_detail(&conn, &snaps, snap_state.selected());
+            let detail = view::snapshot_detail(&conn, &snaps, snap_state.selected());
             draw_ui(
                 terminal,
                 &sessions,
@@ -117,38 +117,6 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
             }
         }
     })
-}
-
-fn selected_detail(
-    conn: &rusqlite::Connection,
-    snaps: &[db::SnapshotListRow],
-    sel: Option<usize>,
-) -> String {
-    let Some(i) = sel else {
-        return String::new();
-    };
-    let Some(s) = snaps.get(i) else {
-        return String::new();
-    };
-    let sum = db::snapshot_summary(conn, s.id).unwrap_or(None);
-    let changes = db::load_symbol_changes(conn, s.id).unwrap_or_default();
-    let mut out = String::new();
-    out.push_str(&format!(
-        "id={} path={}\nsha={}\n\n",
-        s.id, s.path, s.content_sha256
-    ));
-    if let Some(t) = sum {
-        out.push_str("Summary:\n");
-        out.push_str(&t);
-        out.push('\n');
-    }
-    if !changes.is_empty() {
-        out.push_str("\nSymbols:\n");
-        for (c, n, k) in changes {
-            out.push_str(&format!("  {c} {k} {n}\n"));
-        }
-    }
-    out
 }
 
 fn draw_ui(

@@ -1,12 +1,10 @@
-use std::io::IsTerminal;
-
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
     name = "diffloom",
-    about = "Standalone workspace timeline and symbol watcher (per-project data under .diffloom/)"
+    about = "Workspace timeline and symbols — graphical app by default; use `tui` or `mcp` for other modes"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -20,7 +18,34 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Terminal UI (requires an interactive tty)
+    Tui,
+    /// MCP server on stdio
     Mcp,
+}
+
+fn resolve_workspace(cli: &Cli, use_terminal_prompt: bool) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(p) = &cli.root {
+        return diffloom::paths::normalize_path(p)
+            .with_context(|| format!("workspace {}", p.display()));
+    }
+    if let Some(p) = diffloom::app_state::load_last_workspace()? {
+        if let Ok(n) = diffloom::paths::normalize_path(&p) {
+            return Ok(n);
+        }
+    }
+    if use_terminal_prompt {
+        let p = diffloom::app_state::prompt_workspace()?;
+        return diffloom::paths::normalize_path(&p)
+            .with_context(|| format!("workspace {}", p.display()));
+    }
+    let Some(p) = rfd::FileDialog::new()
+        .set_title("Diffloom — choose workspace folder")
+        .pick_folder()
+    else {
+        anyhow::bail!("No workspace folder selected.");
+    };
+    diffloom::paths::normalize_path(&p).with_context(|| format!("workspace {}", p.display()))
 }
 
 fn main() -> anyhow::Result<()> {
@@ -36,23 +61,21 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(diffloom::mcp_server::run_stdio())?;
         }
-        None => {
+        Some(Cmd::Tui) => {
+            use std::io::IsTerminal;
             if !std::io::stdout().is_terminal() {
                 anyhow::bail!(
-                    "TUI needs an interactive terminal. Open a real terminal, or run `diffloom mcp` for stdio MCP mode."
+                    "TUI needs an interactive terminal. Use the default GUI, or run `diffloom mcp` for stdio MCP mode."
                 );
             }
-            let root = if let Some(p) = cli.root {
-                p
-            } else if let Some(p) = diffloom::app_state::load_last_workspace()? {
-                p
-            } else {
-                diffloom::app_state::prompt_workspace()?
-            };
-            let root = diffloom::paths::normalize_path(&root)
-                .with_context(|| format!("workspace {}", root.display()))?;
+            let root = resolve_workspace(&cli, true)?;
             diffloom::app_state::save_last_workspace(&root)?;
             diffloom::tui::run(root)?;
+        }
+        None => {
+            let root = resolve_workspace(&cli, false)?;
+            diffloom::app_state::save_last_workspace(&root)?;
+            diffloom::gui::run(root)?;
         }
     }
     Ok(())
