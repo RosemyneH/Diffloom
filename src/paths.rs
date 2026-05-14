@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub fn normalize_path(path: &Path) -> anyhow::Result<PathBuf> {
     Ok(std::fs::canonicalize(path)?)
@@ -14,13 +14,10 @@ pub fn rel_under_root(root: &Path, abs: &Path) -> anyhow::Result<PathBuf> {
 }
 
 pub fn should_skip_watch(rel: &Path) -> bool {
-    let s = rel.to_string_lossy();
-    s.contains("/.git/")
-        || s.starts_with(".git/")
-        || s.contains("/.diffloom/")
-        || s.starts_with(".diffloom/")
-        || s.contains("/target/")
-        || s.starts_with("target/")
-        || s.contains("/node_modules/")
-        || s.starts_with("node_modules/")
+    rel.components().any(|c| {
+        matches!(c, Component::Normal(name) if {
+            let n = name.to_string_lossy();
+            n == ".git" || n == ".diffloom" || n == "target" || n == "node_modules"
+        })
+    })
 }
