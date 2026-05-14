@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterAgentResponse": [
+      {
+        "command": ".cursor/hooks/cargo-build-test.sh",
+        "timeout": 600
+      }
+    ]
+  }
+}
