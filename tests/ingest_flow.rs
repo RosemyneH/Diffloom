@@ -85,5 +85,7 @@ fn ingest_non_rust_snapshot_without_symbols() {
     let syms = db::load_symbols(&conn, rows[0].id).unwrap();
     assert!(syms.is_empty());
     let summary = db::snapshot_summary(&conn, rows[0].id).unwrap().unwrap();
-    assert!(summary.contains("non-Rust"));
+    assert!(summary.contains("note.md"));
+    assert!(summary.contains("first snapshot"));
+    assert!(summary.contains("Git:"));
 }

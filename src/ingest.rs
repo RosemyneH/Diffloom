@@ -9,6 +9,7 @@ use crate::db::{self, SymbolRow};
 use crate::git_info;
 use crate::paths::{rel_under_root, should_skip_watch};
 use crate::rust_parse::{self, SymChange, SymbolRec};
+use crate::view;
 
 fn now_unix_ms() -> i64 {
     SystemTime::now()
@@ -67,11 +68,35 @@ pub fn ingest_path(
         (Vec::new(), None)
     };
     let changes = rust_parse::diff_symbol_maps(&prev_symbols, &symbols);
-    let summary_line = if is_rs {
+    let file_line = if is_rs {
         format!("{} — {}", path_str, rust_parse::summarize_changes(&changes))
     } else {
-        format!("{} — snapshot (non-Rust)", path_str)
+        let hint = match prev_id {
+            None => "first snapshot for this path".to_string(),
+            Some(pid) => match db::snapshot_body(conn, pid)? {
+                Some(prev_bytes) => {
+                    let old_s = String::from_utf8_lossy(&prev_bytes);
+                    let new_s = String::from_utf8_lossy(&bytes);
+                    let st = view::count_line_changes(&old_s, &new_s);
+                    if st.insertions == 0 && st.deletions == 0 {
+                        "no line deltas vs previous snapshot".to_string()
+                    } else {
+                        format!("lines +{} -{}", st.insertions, st.deletions)
+                    }
+                }
+                None => "previous snapshot body not stored — line delta unavailable in summary"
+                    .to_string(),
+            },
+        };
+        format!("{} — {}", path_str, hint)
     };
+    let mut summary_line = file_line;
+    if let Some(git_txt) =
+        git_info::format_snapshot_git_context(root, git_commit.as_deref(), git_dirty)
+    {
+        summary_line.push_str("\n\n");
+        summary_line.push_str(&git_txt);
+    }
     let tx = conn.transaction()?;
     tx.execute(
         "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_commit, git_dirty, parse_error)

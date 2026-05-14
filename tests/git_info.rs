@@ -28,3 +28,25 @@ fn repo_head_present_and_dirty_tracks_untracked() {
     assert!(dirty2);
     assert!(!dirty);
 }
+
+#[test]
+fn git_context_includes_commit_subject() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let (oid, _) = git_info::repo_head_and_dirty(tmp.path()).unwrap();
+    let oid = oid.expect("commit");
+    let s = git_info::format_snapshot_git_context(tmp.path(), Some(oid.as_str()), false)
+        .expect("in repo");
+    assert!(s.contains("init"), "{s}");
+    assert!(s.contains('@'), "{s}");
+}
+
+#[test]
+fn git_context_notes_dirty_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    init_repo_with_commit(tmp.path());
+    let (oid, _) = git_info::repo_head_and_dirty(tmp.path()).unwrap();
+    let s =
+        git_info::format_snapshot_git_context(tmp.path(), oid.as_deref(), true).expect("in repo");
+    assert!(s.to_lowercase().contains("dirty"), "{s}");
+}
