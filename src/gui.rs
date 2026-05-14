@@ -607,6 +607,79 @@ impl DiffloomGui {
         })
     }
 
+    fn cell_code_w(cell_total_w: f32, strip: egui::Color32) -> f32 {
+        let sw = if strip == egui::Color32::TRANSPARENT {
+            0.0
+        } else {
+            STRIP_W
+        };
+        (cell_total_w - sw - GUTTER_W).max(1.0)
+    }
+
+    fn code_wrap_job(text: &str, color: egui::Color32, code_w: f32) -> egui::text::LayoutJob {
+        let mut job = egui::text::LayoutJob::simple(
+            text.to_owned(),
+            egui::FontId::monospace(CODE_FONT),
+            color,
+            code_w.max(1.0),
+        );
+        job.break_on_newline = true;
+        job
+    }
+
+    fn wrapped_code_block_h(ui: &egui::Ui, text: &str, code_w: f32, color: egui::Color32) -> f32 {
+        if text.is_empty() {
+            return DIFF_ROW_H;
+        }
+        let job = Self::code_wrap_job(text, color, code_w);
+        let galley_h = ui
+            .ctx()
+            .fonts_mut(|f| f.layout_job(job).rect.height());
+        (galley_h + (CODE_PAD_Y as f32) * 2.0).max(DIFF_ROW_H)
+    }
+
+    fn sbs_row_height(ui: &egui::Ui, row: &view::SbsRow, half: f32) -> f32 {
+        let h = match row {
+            view::SbsRow::Equal { left, right, .. } => {
+                let cw = Self::cell_code_w(half, egui::Color32::TRANSPARENT);
+                Self::wrapped_code_block_h(ui, left, cw, TEXT_DIM)
+                    .max(Self::wrapped_code_block_h(ui, right, cw, TEXT_DIM))
+            }
+            view::SbsRow::DeleteLine { text, .. } => {
+                let cw = Self::cell_code_w(half, DEL_STRIP);
+                Self::wrapped_code_block_h(ui, text, cw, DEL_FG)
+            }
+            view::SbsRow::InsertLine { text, .. } => {
+                let cw = Self::cell_code_w(half, ADD_STRIP);
+                Self::wrapped_code_block_h(ui, text, cw, ADD_FG)
+            }
+            view::SbsRow::Both { left, right, .. } => {
+                let cw_l = Self::cell_code_w(half, DEL_STRIP);
+                let cw_r = Self::cell_code_w(half, ADD_STRIP);
+                Self::wrapped_code_block_h(ui, left, cw_l, DEL_FG)
+                    .max(Self::wrapped_code_block_h(ui, right, cw_r, ADD_FG))
+            }
+            view::SbsRow::Skipped { .. } => DIFF_ROW_H,
+        };
+        h.max(DIFF_ROW_H)
+    }
+
+    fn insert_only_row_height(ui: &egui::Ui, row: &view::SbsRow, w: f32) -> f32 {
+        let h = match row {
+            view::SbsRow::Equal { right, .. } => {
+                let cw = Self::cell_code_w(w, egui::Color32::TRANSPARENT);
+                Self::wrapped_code_block_h(ui, right, cw, TEXT_DIM)
+            }
+            view::SbsRow::InsertLine { text, .. } => {
+                let cw = Self::cell_code_w(w, ADD_STRIP);
+                Self::wrapped_code_block_h(ui, text, cw, ADD_FG)
+            }
+            view::SbsRow::Skipped { .. } => DIFF_ROW_H,
+            view::SbsRow::DeleteLine { .. } | view::SbsRow::Both { .. } => DIFF_ROW_H,
+        };
+        h.max(DIFF_ROW_H)
+    }
+
     fn paint_sbs_cell(
         ui: &mut egui::Ui,
         width: f32,
@@ -639,10 +712,7 @@ impl DiffloomGui {
                 .size(GUTTER_FONT)
                 .color(TEXT_DIM)
         };
-        let code_rt = egui::RichText::new(text)
-            .family(egui::FontFamily::Monospace)
-            .size(CODE_FONT)
-            .color(fg);
+        let code_job = Self::code_wrap_job(text, fg, code_w);
 
         egui::Frame::new()
             .fill(row_fill)
@@ -667,7 +737,7 @@ impl DiffloomGui {
                         .show(ui, |ui| {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(GUTTER_W, row_h),
-                                egui::Layout::right_to_left(egui::Align::Center),
+                                egui::Layout::top_down(egui::Align::Max),
                                 |ui| {
                                     ui.add(egui::Label::new(gutter_rt).selectable(false));
                                 },
@@ -677,11 +747,14 @@ impl DiffloomGui {
                         .fill(row_fill)
                         .inner_margin(egui::Margin::symmetric(CODE_PAD_X, CODE_PAD_Y))
                         .show(ui, |ui| {
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(code_w, row_h),
-                                egui::Layout::left_to_right(egui::Align::Center),
+                            ui.set_width(code_w);
+                            ui.set_height(row_h);
+                            ui.with_layout(
+                                egui::Layout::top_down(egui::Align::Min).with_cross_justify(true),
                                 |ui| {
-                                    ui.add(egui::Label::new(code_rt).selectable(false));
+                                    ui.add(
+                                        egui::Label::new(code_job).selectable(false),
+                                    );
                                 },
                             );
                         });
@@ -720,14 +793,14 @@ impl DiffloomGui {
         rows: &[view::SbsRow],
         diff_row_sel: &mut Option<usize>,
     ) {
-        let row_h = DIFF_ROW_H;
         ui.spacing_mut().item_spacing.y = 0.0;
         let w = ui.available_width().max(DIFF_INSERT_MIN_W);
         for (idx, row) in rows.iter().enumerate() {
             let pos = ui.cursor().min;
+            let row_h = Self::insert_only_row_height(ui, row, w);
             ui.horizontal_top(|ui| {
                 ui.set_width(w);
-                ui.set_height(row_h);
+                ui.set_min_height(row_h);
                 match row {
                     view::SbsRow::Equal {
                         new_ln,
@@ -819,16 +892,16 @@ impl DiffloomGui {
         rows: &[view::SbsRow],
         diff_row_sel: &mut Option<usize>,
     ) {
-        let row_h = DIFF_ROW_H;
         ui.spacing_mut().item_spacing.y = 0.0;
         let min_total = DIFF_SBS_MIN_HALF * 2.0 + DIFF_COL_GAP;
         let w = ui.available_width().max(min_total);
         let half = (w - DIFF_COL_GAP) * 0.5;
         for (idx, row) in rows.iter().enumerate() {
             let pos = ui.cursor().min;
+            let row_h = Self::sbs_row_height(ui, row, half);
             ui.horizontal_top(|ui| {
                 ui.set_width(w);
-                ui.set_height(row_h);
+                ui.set_min_height(row_h);
                 ui.spacing_mut().item_spacing.x = 0.0;
                 match row {
                     view::SbsRow::Equal {
