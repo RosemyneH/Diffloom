@@ -44,6 +44,8 @@ const DIFF_ROW_H: f32 = 14.0;
 const CODE_FONT: f32 = 11.0;
 const GUTTER_FONT: f32 = 9.5;
 const SIDEBAR_W: f32 = 208.0;
+const SIDEBAR_PATH_ROW_H: f32 = 36.0;
+const SIDEBAR_SNAP_ROW_H: f32 = 36.0;
 
 type PathWithStats = (db::PathHistoryRow, view::DiffLineStats);
 
@@ -353,62 +355,75 @@ impl DiffloomGui {
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 };
-                                let fr = egui::Frame::new()
-                                    .fill(fill)
-                                    .inner_margin(egui::Margin::symmetric(2, 3))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(ICON_COL_W, 28.0),
-                                                egui::Layout::top_down(egui::Align::Center),
-                                                |ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(file_glyph(&r.path))
-                                                            .size(12.0),
-                                                    );
-                                                },
-                                            );
-                                            ui.vertical(|ui| {
-                                                ui.spacing_mut().item_spacing.y = 1.0;
-                                                let path_color = if sel { TEXT } else { TEXT_DIM };
-                                                ui.label(
-                                                    egui::RichText::new(&r.path)
-                                                        .family(egui::FontFamily::Monospace)
-                                                        .size(11.0)
-                                                        .color(path_color),
-                                                )
-                                                .on_hover_text(&r.path);
+                                let w = ui.available_width();
+                                let ir = ui.scope_builder(
+                                    egui::UiBuilder::new()
+                                        .sense(egui::Sense::click())
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                    |ui| {
+                                        ui.set_min_width(w);
+                                        ui.set_min_height(SIDEBAR_PATH_ROW_H);
+                                        egui::Frame::new()
+                                            .fill(fill)
+                                            .inner_margin(egui::Margin::symmetric(2, 3))
+                                            .show(ui, |ui| {
                                                 ui.horizontal(|ui| {
-                                                    ui.spacing_mut().item_spacing.x = 5.0;
-                                                    ui.label(
-                                                        egui::RichText::new(format!(
-                                                            "+{}",
-                                                            st.insertions
-                                                        ))
-                                                        .size(10.0)
-                                                        .color(ADD_STRIP),
+                                                    ui.allocate_ui_with_layout(
+                                                        egui::vec2(ICON_COL_W, 28.0),
+                                                        egui::Layout::top_down(egui::Align::Center),
+                                                        |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(file_glyph(
+                                                                    &r.path,
+                                                                ))
+                                                                .size(12.0),
+                                                            );
+                                                        },
                                                     );
-                                                    ui.label(
-                                                        egui::RichText::new(format!(
-                                                            "-{}",
-                                                            st.deletions
-                                                        ))
-                                                        .size(10.0)
-                                                        .color(DEL_STRIP),
-                                                    );
-                                                    ui.label(
-                                                        egui::RichText::new(format!(
-                                                            "· {}v",
-                                                            r.snapshot_count
-                                                        ))
-                                                        .size(10.0)
-                                                        .color(TEXT_DIM),
-                                                    );
+                                                    ui.vertical(|ui| {
+                                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                                        let path_color =
+                                                            if sel { TEXT } else { TEXT_DIM };
+                                                        ui.label(
+                                                            egui::RichText::new(&r.path)
+                                                                .family(egui::FontFamily::Monospace)
+                                                                .size(11.0)
+                                                                .color(path_color),
+                                                        )
+                                                        .on_hover_text(&r.path);
+                                                        ui.horizontal(|ui| {
+                                                            ui.spacing_mut().item_spacing.x = 5.0;
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "+{}",
+                                                                    st.insertions
+                                                                ))
+                                                                .size(10.0)
+                                                                .color(ADD_STRIP),
+                                                            );
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "-{}",
+                                                                    st.deletions
+                                                                ))
+                                                                .size(10.0)
+                                                                .color(DEL_STRIP),
+                                                            );
+                                                            ui.label(
+                                                                egui::RichText::new(format!(
+                                                                    "· {}v",
+                                                                    r.snapshot_count
+                                                                ))
+                                                                .size(10.0)
+                                                                .color(TEXT_DIM),
+                                                            );
+                                                        });
+                                                    });
                                                 });
                                             });
-                                        });
-                                    });
-                                if fr.response.clicked() {
+                                    },
+                                );
+                                if ir.response.clicked() {
                                     self.path_sel = i;
                                     self.path_versions_path = None;
                                     self.diff_cache_id = None;
@@ -436,59 +451,74 @@ impl DiffloomGui {
                                 } else {
                                     egui::Color32::TRANSPARENT
                                 };
-                                let fr = egui::Frame::new()
-                                    .fill(fill)
-                                    .inner_margin(egui::Margin::symmetric(2, 3))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(ICON_COL_W, 28.0),
-                                                egui::Layout::top_down(egui::Align::Center),
-                                                |ui| {
-                                                    ui.label(egui::RichText::new("⏱").size(11.0));
-                                                },
-                                            );
-                                            ui.vertical(|ui| {
-                                                ui.spacing_mut().item_spacing.y = 1.0;
-                                                let line1 = format!("#{}  {}", s.id, short);
-                                                let c = if sel { TEXT } else { TEXT_DIM };
-                                                ui.label(
-                                                    egui::RichText::new(line1)
-                                                        .family(egui::FontFamily::Monospace)
-                                                        .size(10.5)
-                                                        .color(c),
-                                                );
-                                                if let Some(st) = st {
-                                                    ui.horizontal(|ui| {
-                                                        ui.spacing_mut().item_spacing.x = 5.0;
-                                                        ui.label(
-                                                            egui::RichText::new(format!(
-                                                                "+{}",
-                                                                st.insertions
-                                                            ))
-                                                            .size(10.0)
-                                                            .color(ADD_STRIP),
-                                                        );
-                                                        ui.label(
-                                                            egui::RichText::new(format!(
-                                                                "-{}",
-                                                                st.deletions
-                                                            ))
-                                                            .size(10.0)
-                                                            .color(DEL_STRIP),
-                                                        );
-                                                    });
-                                                } else {
-                                                    ui.label(
-                                                        egui::RichText::new("(first)")
-                                                            .size(10.0)
-                                                            .color(TEXT_DIM),
+                                let w = ui.available_width();
+                                let ir = ui.scope_builder(
+                                    egui::UiBuilder::new()
+                                        .sense(egui::Sense::click())
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                    |ui| {
+                                        ui.set_min_width(w);
+                                        ui.set_min_height(SIDEBAR_SNAP_ROW_H);
+                                        egui::Frame::new()
+                                            .fill(fill)
+                                            .inner_margin(egui::Margin::symmetric(2, 3))
+                                            .show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.allocate_ui_with_layout(
+                                                        egui::vec2(ICON_COL_W, 28.0),
+                                                        egui::Layout::top_down(egui::Align::Center),
+                                                        |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new("⏱")
+                                                                    .size(11.0),
+                                                            );
+                                                        },
                                                     );
-                                                }
+                                                    ui.vertical(|ui| {
+                                                        ui.spacing_mut().item_spacing.y = 1.0;
+                                                        let line1 =
+                                                            format!("#{}  {}", s.id, short);
+                                                        let c = if sel { TEXT } else { TEXT_DIM };
+                                                        ui.label(
+                                                            egui::RichText::new(line1)
+                                                                .family(egui::FontFamily::Monospace)
+                                                                .size(10.5)
+                                                                .color(c),
+                                                        );
+                                                        if let Some(st) = st {
+                                                            ui.horizontal(|ui| {
+                                                                ui.spacing_mut().item_spacing.x =
+                                                                    5.0;
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "+{}",
+                                                                        st.insertions
+                                                                    ))
+                                                                    .size(10.0)
+                                                                    .color(ADD_STRIP),
+                                                                );
+                                                                ui.label(
+                                                                    egui::RichText::new(format!(
+                                                                        "-{}",
+                                                                        st.deletions
+                                                                    ))
+                                                                    .size(10.0)
+                                                                    .color(DEL_STRIP),
+                                                                );
+                                                            });
+                                                        } else {
+                                                            ui.label(
+                                                                egui::RichText::new("(first)")
+                                                                    .size(10.0)
+                                                                    .color(TEXT_DIM),
+                                                            );
+                                                        }
+                                                    });
+                                                });
                                             });
-                                        });
-                                    });
-                                if fr.response.clicked() {
+                                    },
+                                );
+                                if ir.response.clicked() {
                                     self.snap_sel = i;
                                     self.diff_cache_id = None;
                                 }
@@ -638,10 +668,13 @@ impl DiffloomGui {
         ui.spacing_mut().item_spacing.y = 0.0;
         let w = ui.available_width();
         for (idx, row) in rows.iter().enumerate() {
-            let ir = ui.allocate_ui_with_layout(
-                egui::vec2(w, row_h),
-                egui::Layout::left_to_right(egui::Align::Min),
+            let ir = ui.scope_builder(
+                egui::UiBuilder::new()
+                    .sense(egui::Sense::click())
+                    .layout(egui::Layout::left_to_right(egui::Align::Min)),
                 |ui| {
+                    ui.set_min_width(w);
+                    ui.set_min_height(row_h);
                     ui.set_height(row_h);
                     match row {
                         view::SbsRow::Equal {
@@ -731,10 +764,13 @@ impl DiffloomGui {
         ui.spacing_mut().item_spacing.y = 0.0;
         let w = ui.available_width();
         for (idx, row) in rows.iter().enumerate() {
-            let ir = ui.allocate_ui_with_layout(
-                egui::vec2(w, row_h),
-                egui::Layout::left_to_right(egui::Align::Min),
+            let ir = ui.scope_builder(
+                egui::UiBuilder::new()
+                    .sense(egui::Sense::click())
+                    .layout(egui::Layout::left_to_right(egui::Align::Min)),
                 |ui| {
+                    ui.set_min_width(w);
+                    ui.set_min_height(row_h);
                     ui.set_height(row_h);
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 0.0;
