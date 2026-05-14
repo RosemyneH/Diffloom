@@ -209,3 +209,68 @@ fn snapshot_path_and_summary_helpers() {
         Some("hi")
     );
 }
+
+#[test]
+fn list_snapshots_for_path_orders_newest_first() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    db::configure(&mut conn).unwrap();
+    db::migrate(&conn).unwrap();
+    conn
+        .execute(
+            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+            [],
+        )
+        .unwrap();
+    let sid = conn.last_insert_rowid();
+    for (sha, ts) in [("aaa", 1i64), ("bbb", 2), ("ccc", 3)] {
+        conn.execute(
+            "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_dirty)
+             VALUES (?1, 'src/x.rs', 0, ?2, 1, ?3, 0)",
+            rusqlite::params![sid, sha, ts],
+        )
+        .unwrap();
+    }
+    let rows = db::list_snapshots_for_path(&conn, "src/x.rs", 10).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].content_sha256, "ccc");
+    assert_eq!(rows[2].content_sha256, "aaa");
+}
+
+#[test]
+fn list_commit_groups_dedupes_by_commit() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    db::configure(&mut conn).unwrap();
+    db::migrate(&conn).unwrap();
+    conn
+        .execute(
+            "INSERT INTO sessions (title, kind, created_at) VALUES ('t', 'k', 1)",
+            [],
+        )
+        .unwrap();
+    let sid = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_commit, git_dirty)
+         VALUES (?1, 'a.rs', 0, 's1', 1, 1, 'deadbeef', 0)",
+        [sid],
+    )
+    .unwrap();
+    let id1 = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_commit, git_dirty)
+         VALUES (?1, 'b.rs', 0, 's2', 1, 2, 'deadbeef', 0)",
+        [sid],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO snapshots (session_id, path, mtime_ns, content_sha256, size_bytes, created_at, git_commit, git_dirty)
+         VALUES (?1, 'c.rs', 0, 's3', 1, 3, 'cafebabe', 0)",
+        [sid],
+    )
+    .unwrap();
+    let groups = db::list_commit_groups(&conn, 10).unwrap();
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0].git_commit, "cafebabe");
+    assert_eq!(groups[0].snapshot_id, id1 + 2);
+    assert_eq!(groups[1].git_commit, "deadbeef");
+    assert_eq!(groups[1].snapshot_id, id1 + 1);
+}

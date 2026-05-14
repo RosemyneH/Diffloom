@@ -202,12 +202,60 @@ pub struct SessionRow {
     pub closed_at: Option<i64>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SnapshotListRow {
     pub id: i64,
     pub path: String,
     pub content_sha256: String,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitGroupRow {
+    pub git_commit: String,
+    pub snapshot_id: i64,
+    pub created_at: i64,
+}
+
+pub fn list_snapshots_for_path(
+    conn: &Connection,
+    path: &str,
+    limit: i64,
+) -> rusqlite::Result<Vec<SnapshotListRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, content_sha256, created_at FROM snapshots
+         WHERE path = ?1 ORDER BY id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![path, limit], |r| {
+        Ok(SnapshotListRow {
+            id: r.get(0)?,
+            path: r.get(1)?,
+            content_sha256: r.get(2)?,
+            created_at: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn list_commit_groups(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<CommitGroupRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.git_commit, s.id, s.created_at
+         FROM snapshots s
+         INNER JOIN (
+             SELECT git_commit AS gc, MAX(id) AS mid FROM snapshots
+             WHERE git_commit IS NOT NULL AND TRIM(git_commit) != ''
+             GROUP BY git_commit
+         ) g ON s.git_commit = g.gc AND s.id = g.mid
+         ORDER BY s.id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |r| {
+        Ok(CommitGroupRow {
+            git_commit: r.get(0)?,
+            snapshot_id: r.get(1)?,
+            created_at: r.get(2)?,
+        })
+    })?;
+    rows.collect()
 }
 
 #[derive(Debug, Clone)]

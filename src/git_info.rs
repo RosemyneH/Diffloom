@@ -3,6 +3,12 @@ use std::path::Path;
 use anyhow::Context;
 use git2::{Repository, StatusOptions};
 
+pub fn current_branch(root: &Path) -> Option<String> {
+    let repo = Repository::discover(root).ok()?;
+    let head = repo.head().ok()?;
+    head.shorthand().map(|s| s.to_string())
+}
+
 pub fn repo_head_and_dirty(root: &Path) -> anyhow::Result<(Option<String>, bool)> {
     let repo = match Repository::discover(root) {
         Ok(r) => r,
