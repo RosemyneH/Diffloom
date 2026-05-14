@@ -19,7 +19,6 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(167, 139, 250);
 const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(120, 100, 180);
 const TEXT: egui::Color32 = egui::Color32::from_rgb(230, 232, 240);
 const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(130, 136, 156);
-const TEXT_READ: egui::Color32 = egui::Color32::from_rgb(88, 92, 108);
 const ADD_ROW: egui::Color32 = egui::Color32::from_rgb(16, 72, 52);
 const ADD_GUTTER: egui::Color32 = egui::Color32::from_rgb(8, 52, 38);
 const ADD_STRIP: egui::Color32 = egui::Color32::from_rgb(46, 205, 120);
@@ -112,14 +111,20 @@ fn file_glyph(path: &str) -> &'static str {
 }
 
 impl DiffloomGui {
-    fn rebuild_path_listings(&mut self) {
-        self.sessions = db::list_sessions(&self.conn, 80).unwrap_or_default();
+    fn scoped_paths_matching_filters(&self) -> Vec<db::PathHistoryRow> {
         let mut rows = db::list_paths_by_scope(&self.conn, self.session_filter, 150)
             .unwrap_or_default();
         let q = self.search.trim().to_lowercase();
         if !q.is_empty() {
             rows.retain(|r| r.path.to_lowercase().contains(&q));
         }
+        rows
+    }
+
+    fn rebuild_path_listings(&mut self) {
+        self.sessions = db::list_sessions(&self.conn, 80).unwrap_or_default();
+        let mut rows = self.scoped_paths_matching_filters();
+        rows.retain(|r| !self.read_paths.contains(&r.path));
         self.paths_with_stats = rows
             .into_iter()
             .map(|r| {
@@ -359,7 +364,7 @@ impl DiffloomGui {
                                 .small(),
                         );
                         ui.label(
-                            egui::RichText::new("mark read · next unread")
+                            egui::RichText::new("approve (hide file) · next")
                                 .small()
                                 .color(TEXT_DIM),
                         );
@@ -475,8 +480,6 @@ impl DiffloomGui {
                                                                 .size(12.0)
                                                                 .color(if sel {
                                                                     TEXT
-                                                                } else if self.read_paths.contains(&r.path) {
-                                                                    TEXT_READ
                                                                 } else {
                                                                     TEXT_DIM
                                                                 }),
@@ -487,14 +490,7 @@ impl DiffloomGui {
                                                 );
                                                 ui.vertical(|ui| {
                                                     ui.spacing_mut().item_spacing.y = 1.0;
-                                                    let is_read = self.read_paths.contains(&r.path);
-                                                    let path_color = if sel {
-                                                        TEXT
-                                                    } else if is_read {
-                                                        TEXT_READ
-                                                    } else {
-                                                        TEXT_DIM
-                                                    };
+                                                    let path_color = if sel { TEXT } else { TEXT_DIM };
                                                     let path_l = ui.add(
                                                         egui::Label::new(
                                                             egui::RichText::new(&r.path)
@@ -753,13 +749,7 @@ impl DiffloomGui {
                                                     egui::Label::new(
                                                         egui::RichText::new(file_glyph(&r.path))
                                                             .size(13.0)
-                                                            .color(if sel {
-                                                                TEXT
-                                                            } else if self.read_paths.contains(&r.path) {
-                                                                TEXT_READ
-                                                            } else {
-                                                                TEXT_DIM
-                                                            }),
+                                                            .color(if sel { TEXT } else { TEXT_DIM }),
                                                     )
                                                     .selectable(false),
                                                 );
@@ -1492,30 +1482,46 @@ impl DiffloomGui {
     }
 
     fn mark_read_and_advance(&mut self) {
-        let n = self.paths_with_stats.len();
-        if n == 0 {
+        if self.paths_with_stats.is_empty() {
             return;
         }
-        if let Some((r, _)) = self.paths_with_stats.get(self.path_sel) {
-            self.read_paths.insert(r.path.clone());
-            let _ = db::read_paths_save(&self.conn, &self.read_paths);
+        let ordered: Vec<String> = self
+            .scoped_paths_matching_filters()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        let Some(cur_path) = self
+            .paths_with_stats
+            .get(self.path_sel)
+            .map(|(r, _)| r.path.clone())
+        else {
+            return;
+        };
+        self.read_paths.insert(cur_path.clone());
+        let _ = db::read_paths_save(&self.conn, &self.read_paths);
+        self.rebuild_path_listings();
+        if self.paths_with_stats.is_empty() {
+            self.clear_path_nav_caches();
+            return;
         }
-        let start = (self.path_sel + 1) % n;
-        let mut idx = start;
-        loop {
-            if let Some((r, _)) = self.paths_with_stats.get(idx) {
-                if !self.read_paths.contains(&r.path) {
-                    self.path_sel = idx;
-                    self.clear_path_nav_caches();
-                    return;
-                }
-            }
-            idx = (idx + 1) % n;
-            if idx == start {
-                break;
-            }
-        }
-        self.path_sel = (self.path_sel + 1) % n;
+        let next_path = ordered
+            .iter()
+            .position(|p| p == &cur_path)
+            .and_then(|i| {
+                ordered[i + 1..]
+                    .iter()
+                    .find(|p| !self.read_paths.contains(*p))
+                    .cloned()
+            })
+            .or_else(|| ordered.iter().find(|p| !self.read_paths.contains(*p)).cloned());
+        self.path_sel = next_path
+            .and_then(|np| {
+                self.paths_with_stats
+                    .iter()
+                    .position(|(r, _)| r.path == np)
+            })
+            .unwrap_or(0)
+            .min(self.paths_with_stats.len().saturating_sub(1));
         self.clear_path_nav_caches();
     }
 
