@@ -39,11 +39,11 @@ const STRIP_W: f32 = 3.0;
 const CODE_PAD_X: i8 = 3;
 const CODE_PAD_Y: i8 = 1;
 const DIFF_COL_GAP: f32 = 2.0;
-const ICON_COL_W: f32 = 22.0;
+const ICON_COL_W: f32 = 18.0;
 const DIFF_ROW_H: f32 = 14.0;
 const CODE_FONT: f32 = 11.0;
 const GUTTER_FONT: f32 = 9.5;
-const SIDEBAR_W: f32 = 272.0;
+const SIDEBAR_W: f32 = 208.0;
 
 type PathWithStats = (db::PathHistoryRow, view::DiffLineStats);
 
@@ -66,6 +66,8 @@ struct DiffloomGui {
     diff_cache_text: String,
     sbs_rows: Vec<view::SbsRow>,
     sbs_stats: view::DiffLineStats,
+    diff_row_sel: Option<usize>,
+    paths_scan_key: String,
 }
 
 fn project_label(root: &std::path::Path) -> String {
@@ -97,9 +99,9 @@ fn file_glyph(path: &str) -> &'static str {
 }
 
 impl DiffloomGui {
-    fn refresh_lists(&mut self) {
+    fn rebuild_path_listings(&mut self) {
         self.sessions = db::list_sessions(&self.conn, 80).unwrap_or_default();
-        let mut rows = db::list_paths_by_scope(&self.conn, self.session_filter, 200)
+        let mut rows = db::list_paths_by_scope(&self.conn, self.session_filter, 150)
             .unwrap_or_default();
         let q = self.search.trim().to_lowercase();
         if !q.is_empty() {
@@ -120,7 +122,11 @@ impl DiffloomGui {
         if self.path_sel >= self.paths_with_stats.len() {
             self.path_sel = self.paths_with_stats.len().saturating_sub(1);
         }
+        self.path_versions_path = None;
+        self.diff_row_sel = None;
+    }
 
+    fn sync_selected_path_versions(&mut self) {
         let want_path = self
             .paths_with_stats
             .get(self.path_sel)
@@ -129,6 +135,7 @@ impl DiffloomGui {
             self.path_versions_path = want_path.clone();
             self.snap_sel = 0;
             self.diff_cache_id = None;
+            self.diff_row_sel = None;
             match want_path.as_deref() {
                 None | Some("") => {
                     self.path_snaps.clear();
@@ -136,7 +143,7 @@ impl DiffloomGui {
                 }
                 Some(p) => {
                     self.path_snaps =
-                        db::list_snapshots_for_path(&self.conn, p, 120).unwrap_or_default();
+                        db::list_snapshots_for_path(&self.conn, p, 64).unwrap_or_default();
                     self.snap_stats = self
                         .path_snaps
                         .iter()
@@ -157,23 +164,30 @@ impl DiffloomGui {
         }
     }
 
+    fn refresh_lists(&mut self) {
+        self.rebuild_path_listings();
+        self.sync_selected_path_versions();
+    }
+
     fn recompute_diff_cache(&mut self) {
         let sid = self.path_snaps.get(self.snap_sel).map(|s| s.id);
         if self.diff_cache_id == sid {
             return;
         }
         self.diff_cache_id = sid;
+        self.diff_row_sel = None;
         match sid {
             Some(id) => {
-                self.diff_cache_text = view::unified_diff_for_snapshot(&self.conn, id)
-                    .unwrap_or_else(|e| format!("(diff unavailable)\n{e:#}\n"));
                 if let Ok(Some((ref old, ref new))) = view::snapshot_old_new_strings(&self.conn, id)
                 {
                     let (rows, stats) =
                         view::side_by_side_rows_focused(old, new, DIFF_CONTEXT_LINES);
                     self.sbs_rows = rows;
                     self.sbs_stats = stats;
+                    self.diff_cache_text.clear();
                 } else {
+                    self.diff_cache_text = view::unified_diff_for_snapshot(&self.conn, id)
+                        .unwrap_or_else(|e| format!("(diff unavailable)\n{e:#}\n"));
                     self.sbs_rows.clear();
                     self.sbs_stats = view::DiffLineStats::default();
                 }
@@ -620,111 +634,29 @@ impl DiffloomGui {
         );
     }
 
-    fn paint_insert_only_rows(ui: &mut egui::Ui, rows: &[view::SbsRow]) {
+    fn paint_insert_only_rows(
+        ui: &mut egui::Ui,
+        rows: &[view::SbsRow],
+        diff_row_sel: &mut Option<usize>,
+    ) {
         let row_h = DIFF_ROW_H;
         ui.spacing_mut().item_spacing.y = 0.0;
+        let w = ui.available_width();
         for (idx, row) in rows.iter().enumerate() {
-            ui.push_id(("ins", idx), |ui| {
-                ui.set_height(row_h);
-                match row {
-                    view::SbsRow::Equal {
-                        new_ln,
-                        right,
-                        ..
-                    } => {
-                        let fill = if idx % 2 == 0 { CTX_ROW } else { CTX_ROW_ALT };
-                        Self::paint_insert_only_cell(
-                            ui,
-                            row_h,
-                            Some(*new_ln),
-                            right,
-                            fill,
-                            egui::Color32::from_rgb(26, 28, 36),
-                            egui::Color32::TRANSPARENT,
-                            TEXT_DIM,
-                            None,
-                        );
-                    }
-                    view::SbsRow::InsertLine { new_ln, text } => {
-                        Self::paint_insert_only_cell(
-                            ui,
-                            row_h,
-                            Some(*new_ln),
-                            text,
-                            ADD_ROW,
-                            ADD_GUTTER,
-                            ADD_STRIP,
-                            ADD_FG,
-                            Some("+"),
-                        );
-                    }
-                    view::SbsRow::Skipped { unchanged } => {
-                        let w = ui.available_width();
-                        egui::Frame::new()
-                            .fill(HUNK_BAR)
-                            .inner_margin(egui::Margin::symmetric(4, 2))
-                            .show(ui, |ui| {
-                                ui.set_width(w);
-                                ui.set_height(row_h);
-                                ui.vertical_centered(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "· · ·  {unchanged} unchanged lines  · · ·"
-                                        ))
-                                        .small()
-                                        .italics()
-                                        .color(TEXT_DIM),
-                                    );
-                                });
-                            });
-                    }
-                    view::SbsRow::DeleteLine { .. } | view::SbsRow::Both { .. } => {}
-                }
-            });
-        }
-    }
-
-    fn paint_sbs_spacer(ui: &mut egui::Ui, width: f32, row_h: f32) {
-        egui::Frame::new()
-            .fill(CENTER_BG)
-            .show(ui, |ui| {
-                ui.set_width(width);
-                ui.set_height(row_h);
-            });
-    }
-
-    fn paint_sbs_rows(ui: &mut egui::Ui, rows: &[view::SbsRow]) {
-        let row_h = DIFF_ROW_H;
-        let half = (ui.available_width() - DIFF_COL_GAP) * 0.5;
-        ui.spacing_mut().item_spacing.y = 0.0;
-        for (idx, row) in rows.iter().enumerate() {
-            ui.push_id(("sbs", idx), |ui| {
-                ui.set_height(row_h);
-                ui.horizontal_top(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
+            let ir = ui.allocate_ui_with_layout(
+                egui::vec2(w, row_h),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.set_height(row_h);
                     match row {
                         view::SbsRow::Equal {
-                            old_ln,
                             new_ln,
-                            left,
                             right,
+                            ..
                         } => {
                             let fill = if idx % 2 == 0 { CTX_ROW } else { CTX_ROW_ALT };
-                            Self::paint_sbs_cell(
+                            Self::paint_insert_only_cell(
                                 ui,
-                                half,
-                                row_h,
-                                Some(*old_ln),
-                                left,
-                                fill,
-                                egui::Color32::from_rgb(26, 28, 36),
-                                egui::Color32::TRANSPARENT,
-                                TEXT_DIM,
-                                None,
-                            );
-                            Self::paint_sbs_cell(
-                                ui,
-                                half,
                                 row_h,
                                 Some(*new_ln),
                                 right,
@@ -735,26 +667,9 @@ impl DiffloomGui {
                                 None,
                             );
                         }
-                        view::SbsRow::DeleteLine { old_ln, text } => {
-                            Self::paint_sbs_cell(
-                                ui,
-                                half,
-                                row_h,
-                                Some(*old_ln),
-                                text,
-                                DEL_ROW,
-                                DEL_GUTTER,
-                                DEL_STRIP,
-                                DEL_FG,
-                                None,
-                            );
-                            Self::paint_sbs_spacer(ui, half, row_h);
-                        }
                         view::SbsRow::InsertLine { new_ln, text } => {
-                            Self::paint_sbs_spacer(ui, half, row_h);
-                            Self::paint_sbs_cell(
+                            Self::paint_insert_only_cell(
                                 ui,
-                                half,
                                 row_h,
                                 Some(*new_ln),
                                 text,
@@ -765,44 +680,12 @@ impl DiffloomGui {
                                 Some("+"),
                             );
                         }
-                        view::SbsRow::Both {
-                            old_ln,
-                            new_ln,
-                            left,
-                            right,
-                        } => {
-                            Self::paint_sbs_cell(
-                                ui,
-                                half,
-                                row_h,
-                                Some(*old_ln),
-                                left,
-                                BOTH_LEFT,
-                                DEL_GUTTER,
-                                DEL_STRIP,
-                                DEL_FG,
-                                None,
-                            );
-                            Self::paint_sbs_cell(
-                                ui,
-                                half,
-                                row_h,
-                                Some(*new_ln),
-                                right,
-                                BOTH_RIGHT,
-                                ADD_GUTTER,
-                                ADD_STRIP,
-                                ADD_FG,
-                                Some("+"),
-                            );
-                        }
                         view::SbsRow::Skipped { unchanged } => {
-                            let w = half * 2.0 + DIFF_COL_GAP;
                             egui::Frame::new()
                                 .fill(HUNK_BAR)
                                 .inner_margin(egui::Margin::symmetric(4, 2))
                                 .show(ui, |ui| {
-                                    ui.set_width(w);
+                                    ui.set_width(ui.available_width());
                                     ui.set_height(row_h);
                                     ui.vertical_centered(|ui| {
                                         ui.label(
@@ -816,9 +699,179 @@ impl DiffloomGui {
                                     });
                                 });
                         }
+                        view::SbsRow::DeleteLine { .. } | view::SbsRow::Both { .. } => {}
                     }
-                });
+                },
+            );
+            if ir.response.clicked() {
+                *diff_row_sel = Some(idx);
+            }
+            if *diff_row_sel == Some(idx) {
+                ui.painter().rect_stroke(
+                    ir.response.rect,
+                    1.0,
+                    egui::Stroke::new(1.0, ACCENT_DIM),
+                    egui::epaint::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+
+    fn paint_sbs_spacer(ui: &mut egui::Ui, width: f32, row_h: f32) {
+        egui::Frame::new()
+            .fill(CENTER_BG)
+            .show(ui, |ui| {
+                ui.set_width(width);
+                ui.set_height(row_h);
             });
+    }
+
+    fn paint_sbs_rows(
+        ui: &mut egui::Ui,
+        rows: &[view::SbsRow],
+        diff_row_sel: &mut Option<usize>,
+    ) {
+        let row_h = DIFF_ROW_H;
+        let half = (ui.available_width() - DIFF_COL_GAP) * 0.5;
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let w = ui.available_width();
+        for (idx, row) in rows.iter().enumerate() {
+            let ir = ui.allocate_ui_with_layout(
+                egui::vec2(w, row_h),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.set_height(row_h);
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        match row {
+                            view::SbsRow::Equal {
+                                old_ln,
+                                new_ln,
+                                left,
+                                right,
+                            } => {
+                                let fill = if idx % 2 == 0 { CTX_ROW } else { CTX_ROW_ALT };
+                                Self::paint_sbs_cell(
+                                    ui,
+                                    half,
+                                    row_h,
+                                    Some(*old_ln),
+                                    left,
+                                    fill,
+                                    egui::Color32::from_rgb(26, 28, 36),
+                                    egui::Color32::TRANSPARENT,
+                                    TEXT_DIM,
+                                    None,
+                                );
+                                Self::paint_sbs_cell(
+                                    ui,
+                                    half,
+                                    row_h,
+                                    Some(*new_ln),
+                                    right,
+                                    fill,
+                                    egui::Color32::from_rgb(26, 28, 36),
+                                    egui::Color32::TRANSPARENT,
+                                    TEXT_DIM,
+                                    None,
+                                );
+                            }
+                            view::SbsRow::DeleteLine { old_ln, text } => {
+                                Self::paint_sbs_cell(
+                                    ui,
+                                    half,
+                                    row_h,
+                                    Some(*old_ln),
+                                    text,
+                                    DEL_ROW,
+                                    DEL_GUTTER,
+                                    DEL_STRIP,
+                                    DEL_FG,
+                                    None,
+                                );
+                                Self::paint_sbs_spacer(ui, half, row_h);
+                            }
+                            view::SbsRow::InsertLine { new_ln, text } => {
+                                Self::paint_sbs_spacer(ui, half, row_h);
+                                Self::paint_sbs_cell(
+                                    ui,
+                                    half,
+                                    row_h,
+                                    Some(*new_ln),
+                                    text,
+                                    ADD_ROW,
+                                    ADD_GUTTER,
+                                    ADD_STRIP,
+                                    ADD_FG,
+                                    Some("+"),
+                                );
+                            }
+                            view::SbsRow::Both {
+                                old_ln,
+                                new_ln,
+                                left,
+                                right,
+                            } => {
+                                Self::paint_sbs_cell(
+                                    ui,
+                                    half,
+                                    row_h,
+                                    Some(*old_ln),
+                                    left,
+                                    BOTH_LEFT,
+                                    DEL_GUTTER,
+                                    DEL_STRIP,
+                                    DEL_FG,
+                                    None,
+                                );
+                                Self::paint_sbs_cell(
+                                    ui,
+                                    half,
+                                    row_h,
+                                    Some(*new_ln),
+                                    right,
+                                    BOTH_RIGHT,
+                                    ADD_GUTTER,
+                                    ADD_STRIP,
+                                    ADD_FG,
+                                    Some("+"),
+                                );
+                            }
+                            view::SbsRow::Skipped { unchanged } => {
+                                let sw = half * 2.0 + DIFF_COL_GAP;
+                                egui::Frame::new()
+                                    .fill(HUNK_BAR)
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                                    .show(ui, |ui| {
+                                        ui.set_width(sw);
+                                        ui.set_height(row_h);
+                                        ui.vertical_centered(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "· · ·  {unchanged} unchanged lines  · · ·"
+                                                ))
+                                                .small()
+                                                .italics()
+                                                .color(TEXT_DIM),
+                                            );
+                                        });
+                                    });
+                            }
+                        }
+                    });
+                },
+            );
+            if ir.response.clicked() {
+                *diff_row_sel = Some(idx);
+            }
+            if *diff_row_sel == Some(idx) {
+                ui.painter().rect_stroke(
+                    ir.response.rect,
+                    1.0,
+                    egui::Stroke::new(1.0, ACCENT_DIM),
+                    egui::epaint::StrokeKind::Inside,
+                );
+            }
         }
     }
 
@@ -900,9 +953,17 @@ impl DiffloomGui {
                                             .color(TEXT_DIM),
                                     );
                                 } else if insert_only {
-                                    Self::paint_insert_only_rows(ui, &self.sbs_rows);
+                                    Self::paint_insert_only_rows(
+                                        ui,
+                                        &self.sbs_rows,
+                                        &mut self.diff_row_sel,
+                                    );
                                 } else {
-                                    Self::paint_sbs_rows(ui, &self.sbs_rows);
+                                    Self::paint_sbs_rows(
+                                        ui,
+                                        &self.sbs_rows,
+                                        &mut self.diff_row_sel,
+                                    );
                                 }
                             });
                         ui.horizontal(|ui| {
@@ -995,11 +1056,13 @@ impl DiffloomGui {
                 self.path_sel = (self.path_sel + 1).min(n - 1);
                 self.path_versions_path = None;
                 self.diff_cache_id = None;
+                self.diff_row_sel = None;
             }
             if ctx.input(|i| i.key_pressed(egui::Key::K)) {
                 self.path_sel = self.path_sel.saturating_sub(1);
                 self.path_versions_path = None;
                 self.diff_cache_id = None;
+                self.diff_row_sel = None;
             }
         }
         if self.path_snaps.len() > 1 {
@@ -1007,10 +1070,12 @@ impl DiffloomGui {
             if ctx.input(|i| i.key_pressed(egui::Key::OpenBracket)) {
                 self.snap_sel = (self.snap_sel + 1).min(m - 1);
                 self.diff_cache_id = None;
+                self.diff_row_sel = None;
             }
             if ctx.input(|i| i.key_pressed(egui::Key::CloseBracket)) {
                 self.snap_sel = self.snap_sel.saturating_sub(1);
                 self.diff_cache_id = None;
+                self.diff_row_sel = None;
             }
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Num1)) {
@@ -1024,10 +1089,17 @@ impl DiffloomGui {
 
 impl eframe::App for DiffloomGui {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let mut ingested = false;
         while let Ok(p) = self.file_rx.try_recv() {
+            ingested = true;
             let _ = ingest::ingest_path(&mut self.conn, &self.root, &p);
         }
-        self.refresh_lists();
+        let scan_key = format!("{:?}|{}", self.session_filter, self.search.trim());
+        if ingested || scan_key != self.paths_scan_key {
+            self.paths_scan_key = scan_key;
+            self.rebuild_path_listings();
+        }
+        self.sync_selected_path_versions();
         self.recompute_diff_cache();
 
         ui.visuals_mut().override_text_color = Some(TEXT);
@@ -1056,7 +1128,7 @@ impl eframe::App for DiffloomGui {
         self.handle_keys(ui.ctx());
 
         ui.ctx()
-            .request_repaint_after(Duration::from_millis(200));
+            .request_repaint_after(Duration::from_millis(900));
     }
 }
 
@@ -1115,6 +1187,8 @@ pub fn run(root: PathBuf) -> anyhow::Result<()> {
         diff_cache_text: String::new(),
         sbs_rows: vec![],
         sbs_stats: view::DiffLineStats::default(),
+        diff_row_sel: None,
+        paths_scan_key: String::new(),
     };
 
     eframe::run_native(
