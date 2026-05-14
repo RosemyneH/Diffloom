@@ -37,7 +37,7 @@ pub fn snapshot_detail(
 
 pub fn unified_diff_for_snapshot(conn: &Connection, snapshot_id: i64) -> anyhow::Result<String> {
     let Some((old_s, new_s)) = snapshot_old_new_strings(conn, snapshot_id)? else {
-        return Ok("first snapshot for this path — nothing to compare\n".into());
+        return Ok("(diff unavailable — missing stored file contents for this snapshot)\n".into());
     };
     let diff = TextDiff::from_lines(&*old_s, &*new_s);
     let mut out = String::new();
@@ -68,22 +68,20 @@ pub fn snapshot_old_new_strings(
         Some(p) => p,
         None => return Ok(None),
     };
-    let prev = match db::previous_snapshot_id(conn, &path, snapshot_id)? {
-        Some(p) => p,
-        None => return Ok(None),
-    };
     let cur = match db::snapshot_body(conn, snapshot_id)? {
         Some(b) => b,
         None => return Ok(None),
+    };
+    let cur_s = String::from_utf8_lossy(&cur).into_owned();
+    let prev = match db::previous_snapshot_id(conn, &path, snapshot_id)? {
+        Some(p) => p,
+        None => return Ok(Some((String::new(), cur_s))),
     };
     let old = match db::snapshot_body(conn, prev)? {
         Some(b) => b,
         None => return Ok(None),
     };
-    Ok(Some((
-        String::from_utf8_lossy(&old).into_owned(),
-        String::from_utf8_lossy(&cur).into_owned(),
-    )))
+    Ok(Some((String::from_utf8_lossy(&old).into_owned(), cur_s)))
 }
 
 #[derive(Clone, Copy, Default)]
@@ -137,7 +135,9 @@ pub enum SbsRow {
         left: String,
         right: String,
     },
-    Skipped { unchanged: usize },
+    Skipped {
+        unchanged: usize,
+    },
 }
 
 pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
@@ -167,9 +167,7 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
                 new_ln += len;
             }
             DiffOp::Delete {
-                old_index,
-                old_len,
-                ..
+                old_index, old_len, ..
             } => {
                 for i in 0..old_len {
                     rows.push(SbsRow::DeleteLine {
@@ -180,9 +178,7 @@ pub fn side_by_side_rows(old: &str, new: &str) -> (Vec<SbsRow>, DiffLineStats) {
                 old_ln += old_len;
             }
             DiffOp::Insert {
-                new_index,
-                new_len,
-                ..
+                new_index, new_len, ..
             } => {
                 for i in 0..new_len {
                     rows.push(SbsRow::InsertLine {
