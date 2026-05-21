@@ -38,7 +38,7 @@ similar = "3.1"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "sync", "signal", "time", "io-std"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-tree-sitter = "0.26.8"
+tree-sitter = "0.26.9"
 tree-sitter-rust = "0.24.2"
 ureq = { version = "3.3", features = ["json"] }
 
