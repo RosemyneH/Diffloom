@@ -46,7 +46,7 @@ ureq = { version = "3.3", features = ["json"] }
 tempfile = "3.27"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.34.2", default-features = false, features = [
+eframe = { version = "0.35.0", default-features = false, features = [
     "default",
     "glow",
     "wayland",
@@ -54,4 +54,4 @@ eframe = { version = "0.34.2", default-features = false, features = [
 ] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-eframe = { version = "0.34.2", default-features = false, features = ["default", "glow"] }
+eframe = { version = "0.35.0", default-features = false, features = ["default", "glow"] }
