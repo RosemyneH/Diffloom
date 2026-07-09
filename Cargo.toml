@@ -28,7 +28,7 @@ notify = "8.2.0"
 notify-debouncer-mini = "0.7.0"
 ratatui = "0.30.0"
 rfd = "0.17"
-rmcp = { version = "1.7.0", features = ["server", "transport-io", "macros"] }
+rmcp = { version = "2.2.0", features = ["server", "transport-io", "macros"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
